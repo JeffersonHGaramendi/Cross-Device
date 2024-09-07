@@ -1,4 +1,4 @@
-package com.example.crossdevice
+package com.huayhuajefferson.cross
 
 import io.flutter.embedding.android.FlutterActivity
 

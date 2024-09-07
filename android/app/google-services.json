@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "666842905967",
+    "project_id": "cross-device-d3fef",
+    "storage_bucket": "cross-device-d3fef.appspot.com"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:666842905967:android:272bb93ffa033d1b563c9a",
+        "android_client_info": {
+          "package_name": "com.huayhuajefferson.cross"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCfcn-uBpoSFiE0KgN3A9TyEcMqBgV_o5U"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
