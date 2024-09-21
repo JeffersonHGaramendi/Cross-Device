@@ -27,12 +27,10 @@ class _LoginState extends State<LoginScreen> {
       );
 
   signIn() async {
-    final user = await FirebaseAuth.instance.signInWithEmailAndPassword(
+    await FirebaseAuth.instance.signInWithEmailAndPassword(
         email: _email.text, password: _password.text);
-    if (user != null) {
-      log('User logged');
-      homeScreen(context);
-    }
+    log('User logged');
+    homeScreen(context);
   }
 
   @override
@@ -66,8 +64,9 @@ class _LoginState extends State<LoginScreen> {
             ElevatedButton(
               //label: "Login",
               onPressed: () {
-                if (_email.text.isNotEmpty && _password.text.isNotEmpty)
+                if (_email.text.isNotEmpty && _password.text.isNotEmpty) {
                   signIn();
+                }
               },
               child: Text('Login'),
             ),
