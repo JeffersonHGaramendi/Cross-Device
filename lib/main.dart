@@ -34,9 +34,12 @@ import 'dart:ui' as ui;
 import 'dart:math' as math;
 
 import 'package:crossdevice/auth/login_screen.dart';
+import 'package:crossdevice/chooserole_screen.dart';
+import 'package:crossdevice/navbar.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_speed_dial/flutter_speed_dial.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 import 'package:qr_code_scanner/qr_code_scanner.dart';
@@ -108,6 +111,20 @@ class _WifiSyncHomeState extends State<WifiSyncHome> {
 
   bool _isReadyToShare = false;
   bool _hasImage = false;
+  Map<String, bool> _connectedDevicesReadyState = {};
+
+  bool _allDevicesReady = false;
+  double _startHorizontalDragX = 0;
+  bool _isSwipingLeft = false;
+  bool _isSwipingRight = false;
+
+  bool _isGestureSyncEnabled = false;
+  bool _remoteDeviceSwipedLeft = false;
+  bool _remoteDeviceSwipedRight = false;
+  Timer? _swipeResetTimer;
+
+  bool? _isLeader;
+  bool _isQRCodeScanned = false;
 
   @override
   void initState() {
@@ -170,11 +187,12 @@ class _WifiSyncHomeState extends State<WifiSyncHome> {
     _connections[connectionId] = webSocket;
     _addDebugInfo('Client connected: $connectionId');
 
-    webSocket.add(json.encode({'type': 'request_screen_size'}));
+    setState(() {
+      _connectedDevicesReadyState[connectionId] = false;
+    });
 
-    if (_imageBytes != null) {
-      _shareImageWithNewConnection(webSocket);
-    }
+    webSocket.add(json.encode({'type': 'request_screen_size'}));
+    _broadcastReadyState();
 
     webSocket.listen(
       (message) {
@@ -185,9 +203,10 @@ class _WifiSyncHomeState extends State<WifiSyncHome> {
       onDone: () {
         _addDebugInfo('WebSocket connection closed');
         _connections.remove(connectionId);
-        connectedDevices.removeWhere((device) => device.id == connectionId);
-        _calculateImagePortions();
-        setState(() {});
+        setState(() {
+          _connectedDevicesReadyState.remove(connectionId);
+        });
+        _checkAllDevicesReady();
       },
     );
   }
@@ -219,14 +238,67 @@ class _WifiSyncHomeState extends State<WifiSyncHome> {
     }
   }
 
-  void _toggleSharing() {
-    if (_imageBytes != null) {
+  void _toggleReadyToShare() {
+    setState(() {
+      _isReadyToShare = !_isReadyToShare;
+    });
+    _broadcastReadyState();
+
+    // If this device is becoming ready, automatically set all connected devices to ready
+    if (_isReadyToShare) {
+      _setAllDevicesReady();
+    }
+
+    _checkAllDevicesReady();
+  }
+
+  void _setAllDevicesReady() {
+    final allReadyMessage = {
+      'type': 'set_all_ready',
+      'isReady': true,
+    };
+
+    // Broadcast the message to all connected devices
+    for (var connection in _connections.values) {
+      connection.add(json.encode(allReadyMessage));
+    }
+
+    // Set all local ready states to true
+    setState(() {
+      _connectedDevicesReadyState.updateAll((key, value) => true);
+    });
+  }
+
+  void _checkAllDevicesReady() {
+    bool allReady =
+        _connectedDevicesReadyState.values.every((isReady) => isReady);
+    setState(() {
+      _allDevicesReady = allReady && _isReadyToShare;
+    });
+  }
+
+  void _startSharing() {
+    if (_imageBytes != null && !_isSharing) {
       setState(() {
-        _isSharing = !_isSharing;
+        _isSharing = true;
       });
-      if (_isSharing) {
-        _broadcastImageMetadata();
+      _broadcastImageMetadata();
+      print("Comenzando a compartir la imagen");
+    }
+  }
+
+  void _stopSharing() {
+    if (_isSharing) {
+      setState(() {
+        _isSharing = false;
+      });
+      final stopSharingData = {
+        'type': 'stop_sharing',
+      };
+      for (var connection in _connections.values) {
+        connection.add(json.encode(stopSharingData));
       }
+      print("Dejando de compartir la imagen");
     }
   }
 
@@ -234,23 +306,37 @@ class _WifiSyncHomeState extends State<WifiSyncHome> {
     if (_imageBytes != null) {
       final base64Image = base64Encode(_imageBytes!);
       final metadata = {
-        'type': 'image_metadata',
+        'type': 'image_shared',
         'data': base64Image,
         'sender': user.currentUser?.email ?? 'unknown',
+        'transform': _deviceSpecificTransform.storage.toString(),
       };
       for (var connection in _connections.values) {
         connection.add(json.encode(metadata));
       }
+      print("Imagen compartida con ${_connections.length} dispositivos");
     } else {
-      print('No user available to share');
+      print('No hay imagen disponible para compartir');
     }
   }
 
-  void _toggleReadyToShare() {
-    setState(() {
-      _isReadyToShare = !_isReadyToShare;
+  void _handleImageShared(
+      String base64Image, String sender, String? transformString) {
+    final Uint8List imageBytes = base64Decode(base64Image);
+    ui.decodeImageFromList(imageBytes, (ui.Image result) {
+      setState(() {
+        _uiImage = result;
+        _imageBytes = imageBytes;
+        _isSharing = true;
+        _hasImage = true;
+        _isGestureSyncEnabled = true;
+      });
+      if (transformString != null) {
+        _applyReceivedTransform(transformString);
+      }
+      _calculateImagePortions();
+      _updateImageView();
     });
-    _broadcastReadyState();
   }
 
   void _broadcastReadyState() {
@@ -289,14 +375,35 @@ class _WifiSyncHomeState extends State<WifiSyncHome> {
             connectionId, messageData['width'], messageData['height']);
         break;
       case 'image_metadata':
-        _handleReceivedImage(messageData['data'], messageData['sender']);
+        _handleReceivedImage(messageData['data'], messageData['sender'],
+            messageData['transform']);
         break;
       case 'image_portion':
         _handleReceivedImagePortion(
             messageData['deviceId'], messageData['portion']);
         break;
       case 'sync_gesture':
-        _handleSyncGesture(messageData);
+        if (_isGestureSyncEnabled) {
+          _handleSyncGesture(messageData);
+        }
+        break;
+      case 'swipe_gesture':
+        _handleRemoteSwipeGesture(messageData['direction']);
+        break;
+      case 'image_shared':
+        _handleImageShared(messageData['data'], messageData['sender'],
+            messageData['transform']);
+        break;
+      case 'stop_sharing':
+        _handleStopSharing();
+        break;
+      case 'image_request':
+        if (_hasImage && _isReadyToShare) {
+          _broadcastImageMetadata();
+        }
+        break;
+      case 'set_all_ready':
+        _handleSetAllReady(messageData['isReady']);
         break;
       case 'request_screen_size':
         _sendScreenSize(connectionId);
@@ -305,43 +412,53 @@ class _WifiSyncHomeState extends State<WifiSyncHome> {
         _handleReadyState(
             connectionId, messageData['isReady'], messageData['hasImage']);
         break;
-      case 'reset_view':
-        _resetView();
-        break;
       default:
         print('Unknown message type: ${messageData['type']}');
     }
   }
 
-  void _handleReadyState(String connectionId, bool isReady, bool hasImage) {
-    if (isReady && _isReadyToShare) {
-      if (hasImage && !_hasImage) {
-        // Solicitar la imagen al dispositivo que la tiene
-        _requestImage(connectionId);
-      } else if (_hasImage && !hasImage) {
-        // Compartir la imagen con el dispositivo que está listo y no tiene imagen
-        _shareImageWithDevice(connectionId);
+  void _handleSetAllReady(bool isReady) {
+    setState(() {
+      _isReadyToShare = isReady;
+      _connectedDevicesReadyState.updateAll((key, value) => isReady);
+    });
+    _checkAllDevicesReady();
+
+    // Optionally, confirm back to other devices
+    _broadcastReadyState();
+  }
+
+  void _handleRemoteSwipeGesture(String direction) {
+    if (_isReadyToShare && _allDevicesReady) {
+      if ((direction == 'left' && _isSwipingLeft) ||
+          (direction == 'right' && _isSwipingRight)) {
+        _initiateImageSharing();
       }
     }
   }
 
-  void _requestImage(String connectionId) {
-    final requestData = {
-      'type': 'image_request',
-    };
-    _connections[connectionId]?.add(json.encode(requestData));
+  void _initiateImageSharing() {
+    if (_hasImage) {
+      _broadcastImageMetadata();
+      setState(() {
+        _isGestureSyncEnabled = true;
+        _isSharing = true;
+      });
+    }
   }
 
-  void _shareImageWithDevice(String connectionId) {
-    if (_imageBytes != null) {
-      final base64Image = base64Encode(_imageBytes!);
-      final metadata = {
-        'type': 'image_metadata',
-        'data': base64Image,
-        'sender': 'device_$_localIp',
-      };
-      _connections[connectionId]?.add(json.encode(metadata));
-    }
+  void _handleStopSharing() {
+    setState(() {
+      _isSharing = false;
+    });
+    print("El dispositivo remoto dejó de compartir la imagen");
+  }
+
+  void _handleReadyState(String connectionId, bool isReady, bool hasImage) {
+    setState(() {
+      _connectedDevicesReadyState[connectionId] = isReady;
+    });
+    _checkAllDevicesReady();
   }
 
   void _sendScreenSize(String connectionId) {
@@ -443,16 +560,36 @@ class _WifiSyncHomeState extends State<WifiSyncHome> {
     }
   }
 
-  void _handleReceivedImage(String base64Image, String sender) {
+  void _handleReceivedImage(
+      String base64Image, String sender, String? transformString) {
     final Uint8List imageBytes = base64Decode(base64Image);
     ui.decodeImageFromList(imageBytes, (ui.Image result) {
       setState(() {
         _uiImage = result;
         _imageBytes = imageBytes;
-        _isSharing = true;
+        _isSharing = false;
+        _hasImage = true;
+        _isReadyToShare = false;
       });
+      if (transformString != null) {
+        _applyReceivedTransform(transformString);
+      }
       _calculateImagePortions();
+      _updateImageView();
     });
+  }
+
+  void _applyReceivedTransform(String transformString) {
+    try {
+      List<double> transformValues = transformString
+          .split(',')
+          .map((s) => double.parse(s.trim()))
+          .toList();
+      _deviceSpecificTransform = Matrix4.fromList(transformValues);
+    } catch (e) {
+      print('Error applying received transform: $e');
+      _deviceSpecificTransform = Matrix4.identity();
+    }
   }
 
   void _updateImageView() {
@@ -485,14 +622,12 @@ class _WifiSyncHomeState extends State<WifiSyncHome> {
   }
 
   void _handleSyncGesture(Map<String, dynamic> gestureData) {
-    if (!_isSyncingGesture) {
-      final delta = Offset(gestureData['deltaX'], gestureData['deltaY']);
-      final scale = gestureData['scale'];
-      final focalPoint =
-          Offset(gestureData['focalPointX'], gestureData['focalPointY']);
+    final delta = Offset(gestureData['deltaX'], gestureData['deltaY']);
+    final scale = gestureData['scale'];
+    final focalPoint =
+        Offset(gestureData['focalPointX'], gestureData['focalPointY']);
 
-      _applyTransformation(delta, scale, focalPoint);
-    }
+    _applyTransformation(delta, scale, focalPoint);
   }
 
   Future<void> _pickImage() async {
@@ -508,11 +643,11 @@ class _WifiSyncHomeState extends State<WifiSyncHome> {
         _uiImage = uiImage;
         _hasImage = true;
         _isSharing = false; // No compartir automáticamente
-        _sharedImagePortions.clear();
       });
       _calculateImagePortions();
       _updateImageView();
       _broadcastReadyState(); // Actualizar el estado de tener imagen
+      _checkAllDevicesReady(); // Verificar si todos están listos después de cargar la imagen
     }
   }
 
@@ -525,48 +660,32 @@ class _WifiSyncHomeState extends State<WifiSyncHome> {
     return completer.future;
   }
 
-  // Asegúrate de que esta función esté codificando correctamente el mensaje
-  void _shareImageWithNewConnection(WebSocket connection) {
-    if (_imageBytes != null) {
-      final base64Image = base64Encode(_imageBytes!);
-      final metadata = {
-        'type': 'image_metadata',
-        'data': base64Image,
-        'sender': 'device_$_localIp',
-      };
-      print("Enviando imagen de ${base64Image.length} caracteres");
-      connection.add(json.encode(metadata));
-    } else {
-      print('No hay imagen disponible para compartir'); // Depuración
-    }
-  }
-
   void _onInteractionUpdate(ScaleUpdateDetails details) {
-    if (_isSharing && _uiImage != null) {
-      _isSyncingGesture = true;
-      _syncTimer?.cancel();
-      _syncTimer = Timer(Duration(milliseconds: 100), () {
-        _isSyncingGesture = false;
-      });
-
+    if (_uiImage != null) {
       final delta = details.focalPointDelta;
       final scale = details.scale;
       final focalPoint = details.localFocalPoint;
 
       _applyTransformation(delta, scale, focalPoint);
 
-      final gestureData = {
-        'type': 'sync_gesture',
-        'deltaX': delta.dx,
-        'deltaY': delta.dy,
-        'scale': scale,
-        'focalPointX': focalPoint.dx,
-        'focalPointY': focalPoint.dy,
-      };
-
-      for (var connection in _connections.values) {
-        connection.add(json.encode(gestureData));
+      if (_isGestureSyncEnabled) {
+        _broadcastGesture(delta, scale, focalPoint);
       }
+    }
+  }
+
+  void _broadcastGesture(Offset delta, double scale, Offset focalPoint) {
+    final gestureData = {
+      'type': 'sync_gesture',
+      'deltaX': delta.dx,
+      'deltaY': delta.dy,
+      'scale': scale,
+      'focalPointX': focalPoint.dx,
+      'focalPointY': focalPoint.dy,
+    };
+
+    for (var connection in _connections.values) {
+      connection.add(json.encode(gestureData));
     }
   }
 
@@ -606,158 +725,162 @@ class _WifiSyncHomeState extends State<WifiSyncHome> {
     print(info);
   }
 
+  void _onRoleSelected(bool isLeader) {
+    setState(() {
+      _isLeader = isLeader;
+    });
+  }
+
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: Text('Cross Device'),
-        actions: [
-          IconButton(
-            icon: Icon(Icons.qr_code),
-            onPressed: _showQRCode,
-            tooltip: 'Show QR Code',
-          ),
-          IconButton(
-            icon: Icon(Icons.qr_code_scanner),
-            onPressed: _scanQRCode,
-            tooltip: 'Scan QR Code',
-          ),
-          IconButton(
-            icon: Icon(_isReadyToShare ? Icons.share : Icons.share_outlined),
-            onPressed: _toggleReadyToShare,
-            tooltip:
-                _isReadyToShare ? 'Cancel Ready to Share' : 'Ready to Share',
-          ),
-          // IconButton(
-          //   icon: Icon(Icons.refresh),
-          //   onPressed: _resetView,
-          //   tooltip: 'Reset View',
-          // ),
-          IconButton(
-            icon: Icon(_isSharing ? Icons.stop : Icons.play_arrow),
-            onPressed: _toggleSharing,
-            tooltip: _isSharing ? 'Stop Sharing' : 'Start Sharing',
-          ),
-        ],
-      ),
-      body: Column(
-        children: [
-          Expanded(
-            child: _buildImageView(),
-          ),
-          // if (_debugInfo.isNotEmpty)
-          //   SizedBox(
-          //     height: 100,
-          //     child: SingleChildScrollView(
-          //       child: Text(_debugInfo),
-          //     ),
-          //   ),
-        ],
-      ),
-      drawer: Drawer(
-        child: Column(children: <Widget>[
-          DrawerHeader(
-            decoration: BoxDecoration(
-              color: Colors.grey[200],
+    return MaterialApp(
+      debugShowCheckedModeBanner: false,
+      home: _isLeader == null
+          ? ChooseroleScreen(
+              isLeader:
+                  _onRoleSelected, // Pasamos la función para recibir la elección
+            )
+          : Scaffold(
+              appBar: AppBar(
+                  title: Text('Cross Device'),
+                  leading: IconButton(
+                    icon: Icon(Icons.arrow_back),
+                    onPressed: () {
+                      setState(() {
+                        _isLeader = null; // Regresar a la pantalla de selección
+                      });
+                    },
+                  )),
+              body: Center(
+                  child: _isLeader! ? _buildImageView() : _buildImageView()),
+              floatingActionButton: _isLeader!
+                  ? SpeedDial(
+                      animatedIcon: AnimatedIcons.menu_close,
+                      overlayColor: Colors.black,
+                      overlayOpacity: 0.5,
+                      children: [
+                        SpeedDialChild(
+                          child: Icon(_isReadyToShare
+                              ? Icons.share
+                              : Icons.share_outlined),
+                          label: 'Match',
+                          onTap: () => _toggleReadyToShare(),
+                        ),
+                        SpeedDialChild(
+                          child: Icon(Icons.add_photo_alternate),
+                          label: 'Add image',
+                          onTap: () => _pickImage(),
+                        ),
+                      ],
+                    )
+                  : null,
             ),
-            margin: EdgeInsets.zero,
-            child: Row(
-              children: [
-                CircleAvatar(
-                  radius: 40,
-                  backgroundColor: Colors.grey[300],
-                  child: Icon(
-                    Icons.person,
-                    size: 50,
-                    color: Colors.grey,
-                  ),
-                ),
-                SizedBox(width: 16), // Espacio entre la imagen y el texto
-                Column(
-                  crossAxisAlignment:
-                      CrossAxisAlignment.start, // Textos a la izquierda
-                  mainAxisAlignment: MainAxisAlignment
-                      .center, // Centra verticalmente dentro del Drawer
-                  children: [
-                    Text(
-                      'John Doe',
-                      style: TextStyle(
-                        color: Colors.black,
-                        fontWeight: FontWeight.bold,
-                      ),
-                    ),
-                    Text(
-                      '${user.currentUser?.email}',
-                      style: TextStyle(
-                        color: Colors.blueGrey,
-                      ),
-                    ),
-                  ],
-                ),
-              ],
-            ),
-          ),
-          ListTile(
-            leading: Icon(Icons.person),
-            title: Text('My Account'),
-            onTap: () {
-              // "My Account"
-            },
-          ),
-          Spacer(),
-          SpacerTile(), // Espaciador entre las opciones y el logout
-          ListTile(
-            leading: Icon(Icons.logout),
-            title: Text('Log Out'),
-            onTap: () {
-              logOut(); // "Log Out"
-            },
-          ),
-        ]),
-      ),
-      floatingActionButton: FloatingActionButton(
-        onPressed: _pickImage,
-        tooltip: 'Pick Image',
-        child: Icon(Icons.add_photo_alternate),
-      ),
     );
   }
 
   Widget _buildImageView() {
-    if (_imageBytes == null || _uiImage == null) {
-      return Center(child: Text('Seleccione una imagen'));
+    if ((_imageBytes == null || _uiImage == null) && _isLeader!) {
+      return _buildQRCodeView();
+    }
+
+    if (!_isLeader! && !_isQRCodeScanned) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        _scanQRCode();
+      });
+      return Center(child: CircularProgressIndicator());
+    }
+
+    if ((_imageBytes == null || _uiImage == null) &&
+        !_isLeader! &&
+        _isQRCodeScanned) {
+      return Center(
+        child: Text(
+          'Esperando una imagen...',
+        ),
+      );
     }
 
     return LayoutBuilder(
       builder: (context, constraints) {
-        return InteractiveViewer(
-          transformationController:
-              TransformationController(_deviceSpecificTransform),
-          onInteractionUpdate: _onInteractionUpdate,
-          maxScale: 10.0,
-          child: CustomPaint(
-            painter: ImagePainter(
-              image: _uiImage!,
-              initialViewport: _initialViewport,
+        return GestureDetector(
+          onHorizontalDragStart:
+              _isReadyToShare ? _onHorizontalDragStart : null,
+          onHorizontalDragUpdate:
+              _isReadyToShare ? _onHorizontalDragUpdate : null,
+          onHorizontalDragEnd: _isReadyToShare ? _onHorizontalDragEnd : null,
+          child: InteractiveViewer(
+            transformationController:
+                TransformationController(_deviceSpecificTransform),
+            onInteractionUpdate: _onInteractionUpdate,
+            maxScale: 10.0,
+            child: CustomPaint(
+              painter: ImagePainter(
+                image: _uiImage!,
+                initialViewport: _initialViewport,
+              ),
+              size:
+                  Size(_uiImage!.width.toDouble(), _uiImage!.height.toDouble()),
             ),
-            size: Size(_uiImage!.width.toDouble(), _uiImage!.height.toDouble()),
           ),
         );
       },
     );
   }
 
-  void _showQRCode() {
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        content: SizedBox(
-          width: 300,
-          height: 300,
+  void _onHorizontalDragStart(DragStartDetails details) {
+    _startHorizontalDragX = details.localPosition.dx;
+  }
+
+  void _onHorizontalDragUpdate(DragUpdateDetails details) {
+    double currentX = details.localPosition.dx;
+    double dragDistance = currentX - _startHorizontalDragX;
+
+    setState(() {
+      _isSwipingLeft = dragDistance < -20;
+      _isSwipingRight = dragDistance > 20;
+    });
+  }
+
+  void _onHorizontalDragEnd(DragEndDetails details) {
+    if (_isReadyToShare &&
+        _allDevicesReady &&
+        (_isSwipingLeft || _isSwipingRight)) {
+      _initiateImageSharing();
+    }
+    _broadcastSwipeGesture(_isSwipingLeft ? 'left' : 'right');
+
+    setState(() {
+      _isSwipingLeft = false;
+      _isSwipingRight = false;
+    });
+  }
+
+  void _broadcastSwipeGesture(String direction) {
+    final swipeData = {
+      'type': 'swipe_gesture',
+      'direction': direction,
+    };
+    for (var connection in _connections.values) {
+      connection.add(json.encode(swipeData));
+    }
+  }
+
+  Widget _buildQRCodeView() {
+    return Center(
+      child: Container(
+        constraints: BoxConstraints(
+          maxWidth: 300,
+          maxHeight: 300,
+        ),
+        child: SizedBox(
+          width: 250,
+          height: 250,
           child: QrImageView(
-            data: json.encode({'ip': _localIp}),
+            data: json.encode({
+              'ip': _localIp
+            }), // Aquí puedes pasar el dato que desees mostrar en el QR
             version: QrVersions.auto,
-            size: 300.0,
+            size: 250.0,
           ),
         ),
       ),
@@ -770,39 +893,14 @@ class _WifiSyncHomeState extends State<WifiSyncHome> {
         builder: (context) => QRViewExample(
           onQRScanned: (String data) {
             _connectToDevice(data);
+            setState(() {
+              _isQRCodeScanned = true;
+            });
             Navigator.of(context).pop();
           },
         ),
       ),
     );
-  }
-
-  loginScreenFromHome(BuildContext context) => Navigator.push(
-        context,
-        MaterialPageRoute(builder: (context) => const LoginScreen()),
-      );
-
-  logOut() {
-    user.signOut();
-    log('User offline');
-    loginScreenFromHome(context);
-  }
-
-  void _resetView() {
-    setState(() {
-      _transformationController.value = _baseTransform;
-      _lastFocalPoint = Offset.zero;
-    });
-    _broadcastResetView();
-  }
-
-  void _broadcastResetView() {
-    final resetData = {
-      'type': 'reset_view',
-    };
-    for (var connection in _connections.values) {
-      connection.add(json.encode(resetData));
-    }
   }
 
   @override
@@ -852,22 +950,6 @@ class _QRViewExampleState extends State<QRViewExample> {
   void dispose() {
     controller?.dispose();
     super.dispose();
-  }
-}
-
-//LÍNEA DE DIVISIÓN
-class SpacerTile extends StatelessWidget {
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: EdgeInsets.symmetric(vertical: 10.0),
-      child: Divider(
-        indent: 20,
-        endIndent: 20,
-        thickness: 2,
-        color: Colors.grey[300], // Color del divisor
-      ),
-    );
   }
 }
 
