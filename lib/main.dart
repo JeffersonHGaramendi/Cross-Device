@@ -36,6 +36,7 @@ import 'dart:math' as math;
 import 'package:crossdevice/auth/login_screen.dart';
 import 'package:crossdevice/chooserole_screen.dart';
 import 'package:crossdevice/navbar.dart';
+import 'package:crossdevice/scan_qr.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/material.dart';
@@ -93,16 +94,12 @@ class _WifiSyncHomeState extends State<WifiSyncHome> {
 
   Uint8List? _imageBytes;
   bool _isSharing = false;
-  Map<String, Rect> _sharedImagePortions = {};
   TransformationController _transformationController =
       TransformationController();
   ui.Image? _uiImage;
 
-  bool _isSyncingGesture = false;
   Timer? _syncTimer;
   Rect? _initialViewport;
-  Matrix4 _baseTransform = Matrix4.identity();
-  Offset _lastFocalPoint = Offset.zero;
 
   List<DeviceInfo> connectedDevices = [];
   DeviceInfo? myDevice;
@@ -115,16 +112,25 @@ class _WifiSyncHomeState extends State<WifiSyncHome> {
 
   bool _allDevicesReady = false;
   double _startHorizontalDragX = 0;
+  double _startVerticalDragY = 0;
   bool _isSwipingLeft = false;
   bool _isSwipingRight = false;
+  bool _isSwipingDown = false;
+  bool _isSwipingUp = false;
+
+  bool _isFreeSliding = true;
 
   bool _isGestureSyncEnabled = false;
-  bool _remoteDeviceSwipedLeft = false;
-  bool _remoteDeviceSwipedRight = false;
-  Timer? _swipeResetTimer;
 
   bool? _isLeader;
   bool _isQRCodeScanned = false;
+
+  bool _isImageDraggingEnabled = true;
+
+  bool _isSwipingSimultaneously = false;
+  Map<String, bool> _devicesSwipingState = {};
+  Timer? _swipeTimer;
+  bool _isLocalSwiping = false;
 
   @override
   void initState() {
@@ -241,15 +247,36 @@ class _WifiSyncHomeState extends State<WifiSyncHome> {
   void _toggleReadyToShare() {
     setState(() {
       _isReadyToShare = !_isReadyToShare;
+      _isFreeSliding = !_isReadyToShare;
+      _isImageDraggingEnabled = true; // Siempre permitir el arrastre de imagen
     });
     _broadcastReadyState();
 
-    // If this device is becoming ready, automatically set all connected devices to ready
     if (_isReadyToShare) {
       _setAllDevicesReady();
+    } else {
+      _setAllDevicesNotReady();
     }
 
     _checkAllDevicesReady();
+  }
+
+  void _setAllDevicesNotReady() {
+    final allNotReadyMessage = {
+      'type': 'set_all_ready',
+      'isReady': false,
+    };
+
+    for (var connection in _connections.values) {
+      connection.add(json.encode(allNotReadyMessage));
+    }
+
+    setState(() {
+      _connectedDevicesReadyState.updateAll((key, value) => false);
+      _isFreeSliding = true;
+      _isGestureSyncEnabled =
+          true; // Mantener la sincronización de gestos activa
+    });
   }
 
   void _setAllDevicesReady() {
@@ -388,7 +415,10 @@ class _WifiSyncHomeState extends State<WifiSyncHome> {
         }
         break;
       case 'swipe_gesture':
-        _handleRemoteSwipeGesture(messageData['direction']);
+        _handleRemoteSwipeGesture(messageData['direction'], connectionId);
+        break;
+      case 'swipe_simultaneous':
+        _handleSimultaneousSwipe(connectionId, messageData['isSwipping']);
         break;
       case 'image_shared':
         _handleImageShared(messageData['data'], messageData['sender'],
@@ -420,20 +450,40 @@ class _WifiSyncHomeState extends State<WifiSyncHome> {
   void _handleSetAllReady(bool isReady) {
     setState(() {
       _isReadyToShare = isReady;
+      _isFreeSliding = !isReady;
       _connectedDevicesReadyState.updateAll((key, value) => isReady);
+      _isGestureSyncEnabled =
+          true; // Mantener la sincronización de gestos activa
     });
     _checkAllDevicesReady();
 
-    // Optionally, confirm back to other devices
     _broadcastReadyState();
   }
 
-  void _handleRemoteSwipeGesture(String direction) {
+  void _handleRemoteSwipeGesture(String direction, String connectionId) {
     if (_isReadyToShare && _allDevicesReady) {
       if ((direction == 'left' && _isSwipingLeft) ||
           (direction == 'right' && _isSwipingRight)) {
-        _initiateImageSharing();
+        _checkSimultaneousSwipe();
       }
+    }
+  }
+
+  void _handleSimultaneousSwipe(String connectionId, bool isSwipping) {
+    setState(() {
+      _devicesSwipingState[connectionId] = isSwipping;
+    });
+    _checkSimultaneousSwipe();
+  }
+
+  void _checkSimultaneousSwipe() {
+    bool allDevicesSwipping =
+        _devicesSwipingState.values.every((isSwipping) => isSwipping);
+    if (allDevicesSwipping &&
+        _isLocalSwiping &&
+        _isReadyToShare &&
+        _allDevicesReady) {
+      _initiateImageSharing();
     }
   }
 
@@ -627,6 +677,7 @@ class _WifiSyncHomeState extends State<WifiSyncHome> {
     final focalPoint =
         Offset(gestureData['focalPointX'], gestureData['focalPointY']);
 
+    // Aplicar la transformación sin importar el estado de deslizamiento libre
     _applyTransformation(delta, scale, focalPoint);
   }
 
@@ -668,9 +719,8 @@ class _WifiSyncHomeState extends State<WifiSyncHome> {
 
       _applyTransformation(delta, scale, focalPoint);
 
-      if (_isGestureSyncEnabled) {
-        _broadcastGesture(delta, scale, focalPoint);
-      }
+      // Siempre sincronizar gestos, independientemente del estado de deslizamiento libre
+      _broadcastGesture(delta, scale, focalPoint);
     }
   }
 
@@ -803,11 +853,20 @@ class _WifiSyncHomeState extends State<WifiSyncHome> {
     return LayoutBuilder(
       builder: (context, constraints) {
         return GestureDetector(
-          onHorizontalDragStart:
-              _isReadyToShare ? _onHorizontalDragStart : null,
-          onHorizontalDragUpdate:
-              _isReadyToShare ? _onHorizontalDragUpdate : null,
-          onHorizontalDragEnd: _isReadyToShare ? _onHorizontalDragEnd : null,
+          onHorizontalDragStart: _isReadyToShare && !_isFreeSliding
+              ? _onHorizontalDragStart
+              : null,
+          onHorizontalDragUpdate: _isReadyToShare && !_isFreeSliding
+              ? _onHorizontalDragUpdate
+              : null,
+          onHorizontalDragEnd:
+              _isReadyToShare && !_isFreeSliding ? _onHorizontalDragEnd : null,
+          onVerticalDragStart:
+              _isReadyToShare && !_isFreeSliding ? _onVerticalDragStart : null,
+          onVerticalDragUpdate:
+              _isReadyToShare && !_isFreeSliding ? _onVerticalDragUpdate : null,
+          onVerticalDragEnd:
+              _isReadyToShare && !_isFreeSliding ? _onVerticalDragEnd : null,
           child: InteractiveViewer(
             transformationController:
                 TransformationController(_deviceSpecificTransform),
@@ -817,6 +876,8 @@ class _WifiSyncHomeState extends State<WifiSyncHome> {
               painter: ImagePainter(
                 image: _uiImage!,
                 initialViewport: _initialViewport,
+                showHighlight:
+                    !_isFreeSliding, // Solo mostrar el resaltado cuando no esté en modo de deslizamiento libre
               ),
               size:
                   Size(_uiImage!.width.toDouble(), _uiImage!.height.toDouble()),
@@ -827,11 +888,17 @@ class _WifiSyncHomeState extends State<WifiSyncHome> {
     );
   }
 
+  // HORIZONTAL
   void _onHorizontalDragStart(DragStartDetails details) {
     _startHorizontalDragX = details.localPosition.dx;
+    _isLocalSwiping = true;
+    _broadcastSimultaneousSwipe(true);
+    _startSwipeTimer();
   }
 
   void _onHorizontalDragUpdate(DragUpdateDetails details) {
+    if (!_isLocalSwiping) return;
+
     double currentX = details.localPosition.dx;
     double dragDistance = currentX - _startHorizontalDragX;
 
@@ -839,15 +906,14 @@ class _WifiSyncHomeState extends State<WifiSyncHome> {
       _isSwipingLeft = dragDistance < -20;
       _isSwipingRight = dragDistance > 20;
     });
+
+    _resetSwipeTimer();
   }
 
   void _onHorizontalDragEnd(DragEndDetails details) {
-    if (_isReadyToShare &&
-        _allDevicesReady &&
-        (_isSwipingLeft || _isSwipingRight)) {
-      _initiateImageSharing();
-    }
-    _broadcastSwipeGesture(_isSwipingLeft ? 'left' : 'right');
+    _isLocalSwiping = false;
+    _broadcastSimultaneousSwipe(false);
+    _cancelSwipeTimer();
 
     setState(() {
       _isSwipingLeft = false;
@@ -855,10 +921,66 @@ class _WifiSyncHomeState extends State<WifiSyncHome> {
     });
   }
 
+  // VERTICAL
+  void _onVerticalDragStart(DragStartDetails details) {
+    _startVerticalDragY = details.localPosition.dy;
+  }
+
+  void _onVerticalDragUpdate(DragUpdateDetails details) {
+    double currentY = details.localPosition.dy;
+    double dragDistance = currentY - _startVerticalDragY;
+
+    setState(() {
+      _isSwipingDown = dragDistance < -20;
+      _isSwipingUp = dragDistance > 20;
+    });
+  }
+
+  void _onVerticalDragEnd(DragEndDetails details) {
+    if (_isReadyToShare &&
+        _allDevicesReady &&
+        (_isSwipingDown || _isSwipingUp)) {
+      _initiateImageSharing();
+    }
+    _broadcastSwipeGesture(_isSwipingDown ? 'down' : 'up');
+
+    setState(() {
+      _isSwipingDown = false;
+      _isSwipingUp = false;
+    });
+  }
+
+  // TIMER SWIPE
+  void _startSwipeTimer() {
+    _swipeTimer = Timer(Duration(milliseconds: 500), () {
+      _isLocalSwiping = false;
+      _broadcastSimultaneousSwipe(false);
+    });
+  }
+
+  void _resetSwipeTimer() {
+    _cancelSwipeTimer();
+    _startSwipeTimer();
+  }
+
+  void _cancelSwipeTimer() {
+    _swipeTimer?.cancel();
+  }
+
   void _broadcastSwipeGesture(String direction) {
     final swipeData = {
       'type': 'swipe_gesture',
       'direction': direction,
+    };
+    for (var connection in _connections.values) {
+      connection.add(json.encode(swipeData));
+    }
+  }
+
+  void _broadcastSimultaneousSwipe(bool isSwipping) {
+    final swipeData = {
+      'type': 'swipe_simultaneous',
+      'isSwipping': isSwipping,
     };
     for (var connection in _connections.values) {
       connection.add(json.encode(swipeData));
@@ -913,53 +1035,15 @@ class _WifiSyncHomeState extends State<WifiSyncHome> {
   }
 }
 
-class QRViewExample extends StatefulWidget {
-  final Function(String) onQRScanned;
-
-  QRViewExample({required this.onQRScanned});
-
-  @override
-  State<StatefulWidget> createState() => _QRViewExampleState();
-}
-
-class _QRViewExampleState extends State<QRViewExample> {
-  QRViewController? controller;
-  final GlobalKey qrKey = GlobalKey(debugLabel: 'QR');
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      body: QRView(
-        key: qrKey,
-        onQRViewCreated: _onQRViewCreated,
-      ),
-    );
-  }
-
-  void _onQRViewCreated(QRViewController controller) {
-    this.controller = controller;
-    controller.scannedDataStream.listen((scanData) {
-      if (scanData.code != null) {
-        widget.onQRScanned(scanData.code!);
-        controller.dispose();
-      }
-    });
-  }
-
-  @override
-  void dispose() {
-    controller?.dispose();
-    super.dispose();
-  }
-}
-
 class ImagePainter extends CustomPainter {
   final ui.Image image;
   final Rect? initialViewport;
+  final bool showHighlight;
 
   ImagePainter({
     required this.image,
     this.initialViewport,
+    this.showHighlight = true,
   });
 
   @override
@@ -967,7 +1051,7 @@ class ImagePainter extends CustomPainter {
     final paint = Paint();
     canvas.drawImage(image, Offset.zero, paint);
 
-    if (initialViewport != null) {
+    if (showHighlight && initialViewport != null) {
       final highlightPaint = Paint()
         ..color = Colors.yellow.withOpacity(0.3)
         ..style = PaintingStyle.fill;
@@ -987,6 +1071,7 @@ class ImagePainter extends CustomPainter {
   @override
   bool shouldRepaint(covariant ImagePainter oldDelegate) {
     return oldDelegate.image != image ||
-        oldDelegate.initialViewport != initialViewport;
+        oldDelegate.initialViewport != initialViewport ||
+        oldDelegate.showHighlight != showHighlight;
   }
 }
