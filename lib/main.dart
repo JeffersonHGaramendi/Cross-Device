@@ -154,6 +154,8 @@ class _WifiSyncHomeState extends State<WifiSyncHome> {
     'linked': false,
   };
 
+  String? _activeLinkedDeviceId;
+
   @override
   void initState() {
     super.initState();
@@ -576,12 +578,18 @@ class _WifiSyncHomeState extends State<WifiSyncHome> {
       setState(() {
         _devicesSwipingState[connectionId] = true;
         _lastSwipeTimestamps[connectionId] = DateTime.now();
+        // Store the connectionId of the linked device that's swiping
+        if (!_isLeader!) {
+          _activeLinkedDeviceId = connectionId;
+        }
       });
 
-      // Iniciar temporizador para resetear el estado de este dispositivo
       Timer(swipeTimeout, () {
         setState(() {
           _devicesSwipingState[connectionId] = false;
+          if (!_isLeader!) {
+            _activeLinkedDeviceId = null;
+          }
         });
       });
 
@@ -606,8 +614,15 @@ class _WifiSyncHomeState extends State<WifiSyncHome> {
       if (isSwipping) {
         _lastSwipeTimestamps[connectionId] =
             DateTime.fromMillisecondsSinceEpoch(timestamp);
+        // Store the connectionId if it's a linked device
+        if (remoteRole == 'linked') {
+          _activeLinkedDeviceId = connectionId;
+        }
       } else {
         _lastSwipeTimestamps.remove(connectionId);
+        if (remoteRole == 'linked') {
+          _activeLinkedDeviceId = null;
+        }
       }
       _connectionStates[connectionId]?.isSwipping = isSwipping;
     });
@@ -668,22 +683,54 @@ class _WifiSyncHomeState extends State<WifiSyncHome> {
     if (_hasImage && _imageBytes != null && _uiImage != null) {
       print('Compartiendo imagen...');
       // Verificar si es el dispositivo que tiene la imagen original
-      if (_isLeader! || (_imageBytes != null && _uiImage != null)) {
-        _broadcastImageMetadata();
+      if (_isLeader! && _activeLinkedDeviceId != null) {
+        _shareImageWithDevice(_activeLinkedDeviceId!);
       }
 
       setState(() {
         _isGestureSyncEnabled = true;
         _isSharing = true;
-        // Reiniciar estados de deslizamiento
         _devicesSwipingState.clear();
         _isLocalSwiping = false;
         _isSwipingLeft = false;
         _isSwipingRight = false;
-        // _isReadyToShare = false; // Evitar múltiples compartidas
+        _activeLinkedDeviceId = null; // Reset the active device
       });
     } else {
       print('No hay imagen para compartir');
+    }
+  }
+
+  void _shareImageWithDevice(String deviceId) {
+    if (_imageBytes != null && _uiImage != null) {
+      try {
+        final connection = _connections[deviceId];
+        if (connection != null) {
+          final base64Image = base64Encode(_imageBytes!);
+          final metadata = {
+            'type': 'image_shared',
+            'data': base64Image,
+            'sender': user.currentUser?.email ?? 'unknown',
+            'transform': _deviceSpecificTransform.storage.toList().toString(),
+          };
+
+          print('Enviando imagen al dispositivo: $deviceId');
+          connection.add(json.encode(metadata));
+          print('Imagen enviada al dispositivo');
+
+          setState(() {
+            _isSharing = true;
+            _isGestureSyncEnabled = true;
+            _hasImage = true;
+          });
+        } else {
+          print('No se encontró la conexión para el dispositivo: $deviceId');
+        }
+      } catch (e) {
+        print('Error al compartir imagen: $e');
+      }
+    } else {
+      print('No hay imagen disponible para compartir');
     }
   }
 
@@ -1235,6 +1282,9 @@ class _WifiSyncHomeState extends State<WifiSyncHome> {
       _isSwipingLeft = false;
       _isSwipingRight = false;
       _lastSwipeTimestamps.remove('local');
+      if (!_isLeader!) {
+        _activeLinkedDeviceId = null;
+      }
     });
 
     _broadcastSimultaneousSwipe(false);
