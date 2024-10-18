@@ -149,6 +149,11 @@ class _WifiSyncHomeState extends State<WifiSyncHome> {
   static const pingInterval = Duration(seconds: 5);
   Map<String, DateTime> _lastPongTimes = {};
 
+  final Map<String, bool> _roleSwipeStates = {
+    'leader': false,
+    'linked': false,
+  };
+
   @override
   void initState() {
     super.initState();
@@ -156,6 +161,8 @@ class _WifiSyncHomeState extends State<WifiSyncHome> {
     _getLocalIp();
     _startServer();
     _startPingTimer();
+    _roleSwipeStates['leader'] = false;
+    _roleSwipeStates['linked'] = false;
     //_initializeLocalDevice();
   }
 
@@ -325,7 +332,7 @@ class _WifiSyncHomeState extends State<WifiSyncHome> {
       setState(() {});
       webSocket.listen(
         (message) {
-          _addDebugInfo('Received message: $message');
+          // _addDebugInfo('Received message: $message');
           _handleIncomingMessage(message, connectionId);
         },
         onError: (error) => _addDebugInfo('WebSocket error: $error'),
@@ -420,8 +427,9 @@ class _WifiSyncHomeState extends State<WifiSyncHome> {
         setState(() {
           _isSharing = true;
           _isGestureSyncEnabled = true;
-          _hasImage =
-              true; // Asegurarse de que el estado de la imagen está actualizado
+          _hasImage = true;
+          // _isFreeSliding =
+          //     true; // Habilitar modo de deslizamiento libre después de compartir
         });
       } catch (e) {
         print('Error al compartir imagen: $e');
@@ -491,7 +499,10 @@ class _WifiSyncHomeState extends State<WifiSyncHome> {
         return;
       }
 
-      print("Mensaje recibido de tipo: ${messageData['type']}");
+      // Evitar imprimir los mensajes 'pong'
+      if (messageData['type'] != 'pong') {
+        print("Mensaje recibido de tipo: ${messageData['type']}");
+      }
 
       switch (messageData['type']) {
         case 'screen_size':
@@ -515,7 +526,7 @@ class _WifiSyncHomeState extends State<WifiSyncHome> {
           _handleRemoteSwipeGesture(messageData['direction'], connectionId);
           break;
         case 'swipe_simultaneous':
-          _handleSimultaneousSwipe(connectionId, messageData['isSwipping']);
+          _handleSimultaneousSwipe(connectionId, messageData);
           break;
         case 'image_shared':
           _handleImageShared(messageData['data'], messageData['sender'],
@@ -578,54 +589,89 @@ class _WifiSyncHomeState extends State<WifiSyncHome> {
     }
   }
 
-  void _handleSimultaneousSwipe(String connectionId, bool isSwipping) {
-    print('Recibido estado de deslizamiento: $isSwipping desde $connectionId');
+  void _handleSimultaneousSwipe(
+      String connectionId, Map<String, dynamic> messageData) {
+    bool isSwipping = messageData['isSwipping'];
+    String remoteRole = messageData['role'];
+    int timestamp = messageData['timestamp'];
+
+    print('Recibido estado de deslizamiento:');
+    print('- Desde: $connectionId');
+    print('- Rol: $remoteRole');
+    print('- Estado: $isSwipping');
+    print('- Timestamp: $timestamp');
 
     setState(() {
-      _devicesSwipingState[connectionId] = isSwipping;
+      _roleSwipeStates[remoteRole] = isSwipping;
+      if (isSwipping) {
+        _lastSwipeTimestamps[connectionId] =
+            DateTime.fromMillisecondsSinceEpoch(timestamp);
+      } else {
+        _lastSwipeTimestamps.remove(connectionId);
+      }
+      _connectionStates[connectionId]?.isSwipping = isSwipping;
     });
-
-    // Verificar el estado actual
-    print('Estado actual:');
-    print('Dispositivos deslizando: ${_devicesSwipingState}');
-    print('Deslizamiento local: $_isLocalSwiping');
-    print('Tiene imagen: $_hasImage');
-    print('Imagen bytes: ${_imageBytes != null}');
-    print('UI Image: ${_uiImage != null}');
 
     _checkSimultaneousSwipe();
   }
 
   void _checkSimultaneousSwipe() {
-    if (_connectionStates.isEmpty) {
+    if (_connections.isEmpty) {
       print(
           'No hay dispositivos conectados para verificar deslizamiento simultáneo');
       return;
     }
 
-    bool allDevicesSwipping = _connectionStates.values
-        .every((state) => state.isConnected && state.isSwipping);
+    // Actualizar el estado de swipe del rol actual
+    String localRole = _isLeader! ? 'leader' : 'linked';
+    _roleSwipeStates[localRole] = _isLocalSwiping;
 
-    print('Estado de deslizamiento simultáneo:');
-    print('Total dispositivos: ${_connectionStates.length}');
-    print('Todos deslizando: $allDevicesSwipping');
-    print('Deslizamiento local: $_isLocalSwiping');
+    print('\nVerificando deslizamiento simultáneo:');
+    print('Estado de roles:');
+    print('- Leader deslizando: ${_roleSwipeStates['leader']}');
+    print('- Linked deslizando: ${_roleSwipeStates['linked']}');
+    print('- Rol local ($localRole) deslizando: $_isLocalSwiping');
 
-    if (allDevicesSwipping &&
-        _isLocalSwiping &&
+    // Verificar que AMBOS roles estén deslizando
+    bool bothRolesSwipping =
+        _roleSwipeStates['leader']! && _roleSwipeStates['linked']!;
+
+    // Verificar timestamps solo si ambos roles están deslizando
+    bool swipesAreSimultaneous = false;
+    if (bothRolesSwipping && _lastSwipeTimestamps.length >= 2) {
+      var timestamps = _lastSwipeTimestamps.values.toList();
+      var timeDifference = timestamps[0].difference(timestamps[1]).abs();
+      swipesAreSimultaneous = timeDifference.inMilliseconds < 500;
+
+      print(
+          'Diferencia de tiempo entre swipes: ${timeDifference.inMilliseconds}ms');
+    }
+
+    print('\nResultado de la verificación:');
+    print('- Ambos roles deslizando: $bothRolesSwipping');
+    print('- Deslizamientos simultáneos: $swipesAreSimultaneous');
+    print('- Listo para compartir: $_isReadyToShare');
+    print('- Todos dispositivos listos: $_allDevicesReady');
+    print('- Tiene imagen: $_hasImage');
+
+    if (bothRolesSwipping &&
+        swipesAreSimultaneous &&
         _isReadyToShare &&
-        _allDevicesReady) {
-      if (_isLeader! && _hasImage && _imageBytes != null && _uiImage != null) {
-        print('Iniciando compartir de imagen desde líder');
-        _initiateImageSharing();
-      }
+        _allDevicesReady &&
+        _hasImage) {
+      print('\n¡DESLIZAMIENTO SIMULTÁNEO DETECTADO! - Iniciando compartir');
+      _initiateImageSharing();
     }
   }
 
   void _initiateImageSharing() {
-    if (_hasImage && _imageBytes != null) {
+    if (_hasImage && _imageBytes != null && _uiImage != null) {
       print('Compartiendo imagen...');
-      _broadcastImageMetadata();
+      // Verificar si es el dispositivo que tiene la imagen original
+      if (_isLeader! || (_imageBytes != null && _uiImage != null)) {
+        _broadcastImageMetadata();
+      }
+
       setState(() {
         _isGestureSyncEnabled = true;
         _isSharing = true;
@@ -634,6 +680,7 @@ class _WifiSyncHomeState extends State<WifiSyncHome> {
         _isLocalSwiping = false;
         _isSwipingLeft = false;
         _isSwipingRight = false;
+        // _isReadyToShare = false; // Evitar múltiples compartidas
       });
     } else {
       print('No hay imagen para compartir');
@@ -1052,8 +1099,18 @@ class _WifiSyncHomeState extends State<WifiSyncHome> {
     if ((_imageBytes == null || _uiImage == null) &&
         !_isLeader! &&
         _isQRCodeScanned) {
-      return const Center(
-        child: Text('Esperando una imagen...'),
+      // print(
+      //     'Mostrando mensaje de espera...');
+      return GestureDetector(
+        onHorizontalDragStart: _onHorizontalDragStart,
+        onHorizontalDragUpdate: _onHorizontalDragUpdate,
+        onHorizontalDragEnd: _onHorizontalDragEnd,
+        child: Container(
+          width: MediaQuery.of(context).size.width,
+          height: MediaQuery.of(context).size.height,
+          color: Colors.transparent,
+          child: const Center(child: Text('Esperando una imagen...')),
+        ),
       );
     }
 
@@ -1078,7 +1135,7 @@ class _WifiSyncHomeState extends State<WifiSyncHome> {
           ),
         );
 
-        // Solo envolver en GestureDetector si está listo para compartir y no está en modo libre
+        // Permitir gestos si está listo para compartir y no está en modo libre
         if (_isReadyToShare && !_isFreeSliding) {
           return GestureDetector(
             onHorizontalDragStart: _onHorizontalDragStart,
@@ -1097,25 +1154,25 @@ class _WifiSyncHomeState extends State<WifiSyncHome> {
   void _onHorizontalDragStart(DragStartDetails details) {
     if (!_isReadyToShare || _isFreeSliding) return;
 
-    print('Iniciando deslizamiento horizontal');
+    String localRole = _isLeader! ? 'leader' : 'linked';
+    print('\nIniciando deslizamiento horizontal:');
+    print('- Rol: $localRole');
+
     setState(() {
       _startHorizontalDragX = details.localPosition.dx;
       _isLocalSwiping = true;
       _isSwipeInProgress = true;
       _lastSwipeTimestamps['local'] = DateTime.now();
+      _roleSwipeStates[localRole] = true;
     });
 
     _broadcastSimultaneousSwipe(true);
 
     // Reiniciar el temporizador de timeout
     _swipeTimeoutTimer?.cancel();
-    _swipeTimeoutTimer = Timer(swipeTimeout, () {
-      print('Timeout de deslizamiento');
-      setState(() {
-        _isLocalSwiping = false;
-        _isSwipeInProgress = false;
-      });
-      _broadcastSimultaneousSwipe(false);
+    _swipeTimeoutTimer = Timer(const Duration(milliseconds: 500), () {
+      print('Timeout de deslizamiento para rol: $localRole');
+      _resetSwipeState();
     });
   }
 
@@ -1151,17 +1208,9 @@ class _WifiSyncHomeState extends State<WifiSyncHome> {
   void _onHorizontalDragEnd(DragEndDetails details) {
     if (!_isReadyToShare || _isFreeSliding) return;
 
-    print('Finalizando deslizamiento horizontal');
-    _swipeTimeoutTimer?.cancel();
-
-    setState(() {
-      _isLocalSwiping = false;
-      _isSwipeInProgress = false;
-      _isSwipingLeft = false;
-      _isSwipingRight = false;
-    });
-
-    _broadcastSimultaneousSwipe(false);
+    print(
+        'Finalizando deslizamiento horizontal en rol: ${_isLeader! ? 'leader' : 'linked'}');
+    _resetSwipeState();
   }
 
   void _broadcastSwipeGesture(String direction) {
@@ -1174,6 +1223,23 @@ class _WifiSyncHomeState extends State<WifiSyncHome> {
     }
   }
 
+  void _resetSwipeState() {
+    _swipeTimeoutTimer?.cancel();
+
+    String localRole = _isLeader! ? 'leader' : 'linked';
+    _roleSwipeStates[localRole] = false;
+
+    setState(() {
+      _isLocalSwiping = false;
+      _isSwipeInProgress = false;
+      _isSwipingLeft = false;
+      _isSwipingRight = false;
+      _lastSwipeTimestamps.remove('local');
+    });
+
+    _broadcastSimultaneousSwipe(false);
+  }
+
   void _broadcastSimultaneousSwipe(bool isSwipping) {
     if (_connections.isEmpty) {
       print('No hay dispositivos conectados para transmitir el deslizamiento');
@@ -1183,18 +1249,17 @@ class _WifiSyncHomeState extends State<WifiSyncHome> {
     final swipeData = {
       'type': 'swipe_simultaneous',
       'isSwipping': isSwipping,
+      'role': _isLeader! ? 'leader' : 'linked',
+      'timestamp': DateTime.now().millisecondsSinceEpoch,
     };
 
-    print(
-        'Enviando estado de deslizamiento: $isSwipping a ${_connections.length} dispositivos');
+    print('Enviando estado de deslizamiento: $swipeData');
 
-    for (var entry in _connections.entries) {
+    for (var connection in _connections.values) {
       try {
-        entry.value.add(json.encode(swipeData));
-        _connectionStates[entry.key]?.isSwipping = isSwipping;
+        connection.add(json.encode(swipeData));
       } catch (e) {
-        print('Error al enviar estado de deslizamiento a ${entry.key}: $e');
-        _handleDisconnection(entry.key);
+        print('Error al enviar estado de deslizamiento: $e');
       }
     }
   }
