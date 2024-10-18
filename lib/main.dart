@@ -82,6 +82,18 @@ class DeviceInfo {
   DeviceInfo({required this.id, required this.portion, required this.size});
 }
 
+class ConnectionState {
+  bool isConnected;
+  DateTime lastActivity;
+  bool isSwipping;
+
+  ConnectionState({
+    this.isConnected = false,
+    DateTime? lastActivity,
+    this.isSwipping = false,
+  }) : this.lastActivity = lastActivity ?? DateTime.now();
+}
+
 class _WifiSyncHomeState extends State<WifiSyncHome> {
   final NetworkInfo _networkInfo = NetworkInfo();
   final user = FirebaseAuth.instance;
@@ -98,7 +110,6 @@ class _WifiSyncHomeState extends State<WifiSyncHome> {
       TransformationController();
   ui.Image? _uiImage;
 
-  Timer? _syncTimer;
   Rect? _initialViewport;
 
   List<DeviceInfo> connectedDevices = [];
@@ -112,11 +123,8 @@ class _WifiSyncHomeState extends State<WifiSyncHome> {
 
   bool _allDevicesReady = false;
   double _startHorizontalDragX = 0;
-  double _startVerticalDragY = 0;
   bool _isSwipingLeft = false;
   bool _isSwipingRight = false;
-  bool _isSwipingDown = false;
-  bool _isSwipingUp = false;
 
   bool _isFreeSliding = true;
 
@@ -127,10 +135,19 @@ class _WifiSyncHomeState extends State<WifiSyncHome> {
 
   bool _isImageDraggingEnabled = true;
 
-  bool _isSwipingSimultaneously = false;
   Map<String, bool> _devicesSwipingState = {};
-  Timer? _swipeTimer;
   bool _isLocalSwiping = false;
+
+  bool _isSwipeInProgress = false;
+  Timer? _swipeTimeoutTimer;
+  static const swipeTimeout = Duration(milliseconds: 1000);
+  Map<String, DateTime> _lastSwipeTimestamps = {};
+
+  Map<String, ConnectionState> _connectionStates = {};
+
+  Timer? _pingTimer;
+  static const pingInterval = Duration(seconds: 5);
+  Map<String, DateTime> _lastPongTimes = {};
 
   @override
   void initState() {
@@ -138,6 +155,7 @@ class _WifiSyncHomeState extends State<WifiSyncHome> {
     _transformationController = TransformationController();
     _getLocalIp();
     _startServer();
+    _startPingTimer();
     //_initializeLocalDevice();
   }
 
@@ -145,6 +163,41 @@ class _WifiSyncHomeState extends State<WifiSyncHome> {
   void didChangeDependencies() {
     super.didChangeDependencies();
     _initializeLocalDevice(); // Ahora es seguro llamar aquí a MediaQuery
+  }
+
+  void _startPingTimer() {
+    _pingTimer?.cancel();
+    _pingTimer = Timer.periodic(pingInterval, (timer) {
+      _sendPingToAllClients();
+      _checkConnectionTimeouts();
+    });
+  }
+
+  void _sendPingToAllClients() {
+    final pingMessage = json.encode({
+      'type': 'ping',
+      'timestamp': DateTime.now().millisecondsSinceEpoch,
+    });
+
+    _connections.forEach((id, connection) {
+      try {
+        connection.add(pingMessage);
+      } catch (e) {
+        print('Error sending ping to client $id: $e');
+        _handleDisconnection(id);
+      }
+    });
+  }
+
+  void _checkConnectionTimeouts() {
+    final now = DateTime.now();
+    _lastPongTimes.forEach((id, lastPong) {
+      if (now.difference(lastPong).inSeconds > 15) {
+        // 15 seconds timeout
+        print('Connection timeout for client $id');
+        _handleDisconnection(id);
+      }
+    });
   }
 
   void _initializeLocalDevice() async {
@@ -190,8 +243,19 @@ class _WifiSyncHomeState extends State<WifiSyncHome> {
   // Asegúrate de que esta función esté actualizada para manejar los nuevos tipos de mensajes
   void _handleConnection(WebSocket webSocket) {
     String connectionId = DateTime.now().millisecondsSinceEpoch.toString();
+
+    // Configurar el WebSocket para no cerrarse por inactividad
+    webSocket.pingInterval = const Duration(seconds: 5);
+
     _connections[connectionId] = webSocket;
+    _lastPongTimes[connectionId] = DateTime.now();
+
+    _connectionStates[connectionId] =
+        ConnectionState(isConnected: true, lastActivity: DateTime.now());
+
     _addDebugInfo('Client connected: $connectionId');
+    print(
+        'Nuevo dispositivo conectado. Total dispositivos: ${_connections.length}');
 
     setState(() {
       _connectedDevicesReadyState[connectionId] = false;
@@ -202,19 +266,51 @@ class _WifiSyncHomeState extends State<WifiSyncHome> {
 
     webSocket.listen(
       (message) {
-        _addDebugInfo('Received message from $connectionId: $message');
-        _handleIncomingMessage(message, connectionId);
+        _lastPongTimes[connectionId] = DateTime.now();
+        _connectionStates[connectionId]?.lastActivity = DateTime.now();
+
+        try {
+          if (message is String) {
+            final decoded = json.decode(message);
+            if (decoded['type'] == 'pong') {
+              return; // Ignorar mensajes pong para el manejo normal
+            }
+            _handleIncomingMessage(message, connectionId);
+          }
+        } catch (e) {
+          print('Error processing message: $e');
+        }
       },
-      onError: (error) => _addDebugInfo('WebSocket error: $error'),
+      onError: (error) {
+        print('WebSocket error for client $connectionId: $error');
+        _handleDisconnection(connectionId);
+      },
       onDone: () {
-        _addDebugInfo('WebSocket connection closed');
-        _connections.remove(connectionId);
-        setState(() {
-          _connectedDevicesReadyState.remove(connectionId);
-        });
-        _checkAllDevicesReady();
+        print('WebSocket connection closed for client $connectionId');
+        _handleDisconnection(connectionId);
       },
+      cancelOnError: false,
     );
+  }
+
+  void _handleDisconnection(String connectionId) {
+    if (!_connections.containsKey(connectionId)) return; // Evitar duplicados
+
+    print('Manejando desconexión para cliente: $connectionId');
+
+    _connections.remove(connectionId);
+    _connectionStates.remove(connectionId);
+    _connectedDevicesReadyState.remove(connectionId);
+    _lastPongTimes.remove(connectionId);
+
+    // Remover el dispositivo de la lista de dispositivos conectados
+    connectedDevices.removeWhere((device) => device.id == connectionId);
+
+    setState(() {});
+    _checkAllDevicesReady();
+
+    print(
+        'Dispositivo desconectado. Dispositivos restantes: ${_connections.length}');
   }
 
   void _connectToDevice(String data) async {
@@ -304,44 +400,32 @@ class _WifiSyncHomeState extends State<WifiSyncHome> {
     });
   }
 
-  void _startSharing() {
-    if (_imageBytes != null && !_isSharing) {
-      setState(() {
-        _isSharing = true;
-      });
-      _broadcastImageMetadata();
-      print("Comenzando a compartir la imagen");
-    }
-  }
-
-  void _stopSharing() {
-    if (_isSharing) {
-      setState(() {
-        _isSharing = false;
-      });
-      final stopSharingData = {
-        'type': 'stop_sharing',
-      };
-      for (var connection in _connections.values) {
-        connection.add(json.encode(stopSharingData));
-      }
-      print("Dejando de compartir la imagen");
-    }
-  }
-
   void _broadcastImageMetadata() {
-    if (_imageBytes != null) {
-      final base64Image = base64Encode(_imageBytes!);
-      final metadata = {
-        'type': 'image_shared',
-        'data': base64Image,
-        'sender': user.currentUser?.email ?? 'unknown',
-        'transform': _deviceSpecificTransform.storage.toString(),
-      };
-      for (var connection in _connections.values) {
-        connection.add(json.encode(metadata));
+    if (_imageBytes != null && _uiImage != null) {
+      try {
+        final base64Image = base64Encode(_imageBytes!);
+        final metadata = {
+          'type': 'image_shared',
+          'data': base64Image,
+          'sender': user.currentUser?.email ?? 'unknown',
+          'transform': _deviceSpecificTransform.storage.toList().toString(),
+        };
+
+        print('Enviando imagen a ${_connections.length} dispositivos');
+        for (var connection in _connections.values) {
+          connection.add(json.encode(metadata));
+          print('Imagen enviada a dispositivo');
+        }
+
+        setState(() {
+          _isSharing = true;
+          _isGestureSyncEnabled = true;
+          _hasImage =
+              true; // Asegurarse de que el estado de la imagen está actualizado
+        });
+      } catch (e) {
+        print('Error al compartir imagen: $e');
       }
-      print("Imagen compartida con ${_connections.length} dispositivos");
     } else {
       print('No hay imagen disponible para compartir');
     }
@@ -349,21 +433,29 @@ class _WifiSyncHomeState extends State<WifiSyncHome> {
 
   void _handleImageShared(
       String base64Image, String sender, String? transformString) {
-    final Uint8List imageBytes = base64Decode(base64Image);
-    ui.decodeImageFromList(imageBytes, (ui.Image result) {
-      setState(() {
-        _uiImage = result;
-        _imageBytes = imageBytes;
-        _isSharing = true;
-        _hasImage = true;
-        _isGestureSyncEnabled = true;
+    try {
+      final Uint8List imageBytes = base64Decode(base64Image);
+      ui.decodeImageFromList(imageBytes, (ui.Image result) {
+        setState(() {
+          _uiImage = result;
+          _imageBytes = imageBytes;
+          _isSharing = true;
+          _hasImage = true;
+          _isGestureSyncEnabled = true;
+        });
+
+        if (transformString != null) {
+          _applyReceivedTransform(transformString);
+        }
+
+        _calculateImagePortions();
+        _updateImageView();
+
+        print('Imagen recibida y procesada correctamente');
       });
-      if (transformString != null) {
-        _applyReceivedTransform(transformString);
-      }
-      _calculateImagePortions();
-      _updateImageView();
-    });
+    } catch (e) {
+      print('Error al procesar la imagen recibida: $e');
+    }
   }
 
   void _broadcastReadyState() {
@@ -378,72 +470,80 @@ class _WifiSyncHomeState extends State<WifiSyncHome> {
   }
 
   void _handleIncomingMessage(dynamic message, String connectionId) {
-    Map<String, dynamic> messageData = json.decode(message);
+    Map<String, dynamic> messageData;
 
-    if (message is String) {
-      try {
+    try {
+      if (message is String) {
         messageData = json.decode(message);
-      } catch (e) {
-        print('Error decodificando mensaje: $e');
+      } else if (message is Map<String, dynamic>) {
+        messageData = message;
+      } else {
+        print('Unexpected message type: ${message.runtimeType}');
         return;
       }
-    } else if (message is Map<String, dynamic>) {
-      messageData = message;
-    } else {
-      print('Tipo de mensaje inesperado: ${message.runtimeType}');
-      return;
-    }
 
-    print("Mensaje recibido de tipo: ${messageData['type']}");
+      // Manejar ping/pong
+      if (messageData['type'] == 'ping') {
+        _connections[connectionId]?.add(json.encode({
+          'type': 'pong',
+          'timestamp': messageData['timestamp'],
+        }));
+        return;
+      }
 
-    switch (messageData['type']) {
-      case 'screen_size':
-        _handleScreenSizeInfo(
-            connectionId, messageData['width'], messageData['height']);
-        break;
-      case 'image_metadata':
-        _handleReceivedImage(messageData['data'], messageData['sender'],
-            messageData['transform']);
-        break;
-      case 'image_portion':
-        _handleReceivedImagePortion(
-            messageData['deviceId'], messageData['portion']);
-        break;
-      case 'sync_gesture':
-        if (_isGestureSyncEnabled) {
-          _handleSyncGesture(messageData);
-        }
-        break;
-      case 'swipe_gesture':
-        _handleRemoteSwipeGesture(messageData['direction'], connectionId);
-        break;
-      case 'swipe_simultaneous':
-        _handleSimultaneousSwipe(connectionId, messageData['isSwipping']);
-        break;
-      case 'image_shared':
-        _handleImageShared(messageData['data'], messageData['sender'],
-            messageData['transform']);
-        break;
-      case 'stop_sharing':
-        _handleStopSharing();
-        break;
-      case 'image_request':
-        if (_hasImage && _isReadyToShare) {
-          _broadcastImageMetadata();
-        }
-        break;
-      case 'set_all_ready':
-        _handleSetAllReady(messageData['isReady']);
-        break;
-      case 'request_screen_size':
-        _sendScreenSize(connectionId);
-        break;
-      case 'ready_state':
-        _handleReadyState(
-            connectionId, messageData['isReady'], messageData['hasImage']);
-        break;
-      default:
-        print('Unknown message type: ${messageData['type']}');
+      print("Mensaje recibido de tipo: ${messageData['type']}");
+
+      switch (messageData['type']) {
+        case 'screen_size':
+          _handleScreenSizeInfo(
+              connectionId, messageData['width'], messageData['height']);
+          break;
+        case 'image_metadata':
+          _handleReceivedImage(messageData['data'], messageData['sender'],
+              messageData['transform']);
+          break;
+        case 'image_portion':
+          _handleReceivedImagePortion(
+              messageData['deviceId'], messageData['portion']);
+          break;
+        case 'sync_gesture':
+          if (_isGestureSyncEnabled) {
+            _handleSyncGesture(messageData);
+          }
+          break;
+        case 'swipe_gesture':
+          _handleRemoteSwipeGesture(messageData['direction'], connectionId);
+          break;
+        case 'swipe_simultaneous':
+          _handleSimultaneousSwipe(connectionId, messageData['isSwipping']);
+          break;
+        case 'image_shared':
+          _handleImageShared(messageData['data'], messageData['sender'],
+              messageData['transform']);
+          break;
+        case 'stop_sharing':
+          _handleStopSharing();
+          break;
+        case 'image_request':
+          if (_hasImage && _isReadyToShare) {
+            _broadcastImageMetadata();
+          }
+          break;
+        case 'set_all_ready':
+          _handleSetAllReady(messageData['isReady']);
+          break;
+        case 'request_screen_size':
+          _sendScreenSize(connectionId);
+          break;
+        case 'ready_state':
+          _handleReadyState(
+              connectionId, messageData['isReady'], messageData['hasImage']);
+          break;
+        default:
+          print('Unknown message type: ${messageData['type']}');
+      }
+    } catch (e) {
+      print('Error handling message: $e');
     }
   }
 
@@ -462,38 +562,81 @@ class _WifiSyncHomeState extends State<WifiSyncHome> {
 
   void _handleRemoteSwipeGesture(String direction, String connectionId) {
     if (_isReadyToShare && _allDevicesReady) {
-      if ((direction == 'left' && _isSwipingLeft) ||
-          (direction == 'right' && _isSwipingRight)) {
-        _checkSimultaneousSwipe();
-      }
+      setState(() {
+        _devicesSwipingState[connectionId] = true;
+        _lastSwipeTimestamps[connectionId] = DateTime.now();
+      });
+
+      // Iniciar temporizador para resetear el estado de este dispositivo
+      Timer(swipeTimeout, () {
+        setState(() {
+          _devicesSwipingState[connectionId] = false;
+        });
+      });
+
+      _checkSimultaneousSwipe();
     }
   }
 
   void _handleSimultaneousSwipe(String connectionId, bool isSwipping) {
+    print('Recibido estado de deslizamiento: $isSwipping desde $connectionId');
+
     setState(() {
       _devicesSwipingState[connectionId] = isSwipping;
     });
+
+    // Verificar el estado actual
+    print('Estado actual:');
+    print('Dispositivos deslizando: ${_devicesSwipingState}');
+    print('Deslizamiento local: $_isLocalSwiping');
+    print('Tiene imagen: $_hasImage');
+    print('Imagen bytes: ${_imageBytes != null}');
+    print('UI Image: ${_uiImage != null}');
+
     _checkSimultaneousSwipe();
   }
 
   void _checkSimultaneousSwipe() {
-    bool allDevicesSwipping =
-        _devicesSwipingState.values.every((isSwipping) => isSwipping);
+    if (_connectionStates.isEmpty) {
+      print(
+          'No hay dispositivos conectados para verificar deslizamiento simultáneo');
+      return;
+    }
+
+    bool allDevicesSwipping = _connectionStates.values
+        .every((state) => state.isConnected && state.isSwipping);
+
+    print('Estado de deslizamiento simultáneo:');
+    print('Total dispositivos: ${_connectionStates.length}');
+    print('Todos deslizando: $allDevicesSwipping');
+    print('Deslizamiento local: $_isLocalSwiping');
+
     if (allDevicesSwipping &&
         _isLocalSwiping &&
         _isReadyToShare &&
         _allDevicesReady) {
-      _initiateImageSharing();
+      if (_isLeader! && _hasImage && _imageBytes != null && _uiImage != null) {
+        print('Iniciando compartir de imagen desde líder');
+        _initiateImageSharing();
+      }
     }
   }
 
   void _initiateImageSharing() {
-    if (_hasImage) {
+    if (_hasImage && _imageBytes != null) {
+      print('Compartiendo imagen...');
       _broadcastImageMetadata();
       setState(() {
         _isGestureSyncEnabled = true;
         _isSharing = true;
+        // Reiniciar estados de deslizamiento
+        _devicesSwipingState.clear();
+        _isLocalSwiping = false;
+        _isSwipingLeft = false;
+        _isSwipingRight = false;
       });
+    } else {
+      print('No hay imagen para compartir');
     }
   }
 
@@ -682,33 +825,96 @@ class _WifiSyncHomeState extends State<WifiSyncHome> {
   }
 
   Future<void> _pickImage() async {
-    final ImagePicker picker = ImagePicker();
-    final XFile? pickedFile =
-        await picker.pickImage(source: ImageSource.gallery);
+    try {
+      final ImagePicker picker = ImagePicker();
+      final XFile? pickedFile =
+          await picker.pickImage(source: ImageSource.gallery);
 
-    if (pickedFile != null) {
-      final Uint8List imageBytes = await pickedFile.readAsBytes();
-      final ui.Image uiImage = await _loadImage(imageBytes);
-      setState(() {
-        _imageBytes = imageBytes;
-        _uiImage = uiImage;
-        _hasImage = true;
-        _isSharing = false; // No compartir automáticamente
-      });
-      _calculateImagePortions();
-      _updateImageView();
-      _broadcastReadyState(); // Actualizar el estado de tener imagen
-      _checkAllDevicesReady(); // Verificar si todos están listos después de cargar la imagen
+      if (pickedFile != null) {
+        // Mantener una referencia a las conexiones actuales
+        final currentConnections = Map<String, WebSocket>.from(_connections);
+
+        final Uint8List imageBytes = await pickedFile.readAsBytes();
+        final ui.Image uiImage = await _loadImage(imageBytes);
+
+        // Verificar que las conexiones siguen activas
+        if (!mounted) return;
+
+        setState(() {
+          _imageBytes = imageBytes;
+          _uiImage = uiImage;
+          _hasImage = true;
+          _isSharing = false;
+          // Restaurar las conexiones si se perdieron
+          if (_connections.isEmpty) {
+            _connections = currentConnections;
+          }
+        });
+
+        // Esperar a que el estado se actualice
+        await Future.delayed(const Duration(milliseconds: 200));
+
+        // Verificar y recalcular las porciones de imagen solo si hay dispositivos conectados
+        if (connectedDevices.isNotEmpty) {
+          _calculateImagePortions();
+        } else {
+          // Si no hay dispositivos conectados, reinicializar el dispositivo local
+          _initializeLocalDevice();
+        }
+
+        _updateImageView();
+        _broadcastReadyState();
+        _checkAllDevicesReady();
+
+        // Log del estado actual
+        print('Estado actualizado después de cargar la imagen:');
+        print('Dispositivos conectados: ${_connections.length}');
+        print('Dispositivos registrados: ${connectedDevices.length}');
+        print('_hasImage: $_hasImage');
+        print('_imageBytes: ${_imageBytes != null}');
+        print('_uiImage: ${_uiImage != null}');
+        print(
+            'Dimensiones de la imagen: ${_uiImage?.width}x${_uiImage?.height}');
+      }
+    } catch (e, stackTrace) {
+      print('Error al cargar la imagen: $e');
+      print('Stack trace: $stackTrace');
+
+      // Mostrar error al usuario
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Error al cargar la imagen: ${e.toString()}'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
     }
   }
 
   Future<ui.Image> _loadImage(Uint8List imageBytes) async {
+    _verifyConnections();
     final Completer<ui.Image> completer = Completer();
     ui.decodeImageFromList(imageBytes, (ui.Image img) {
       print("Imagen cargada: ${img.width}x${img.height}");
       completer.complete(img);
     });
     return completer.future;
+  }
+
+  void _verifyConnections() {
+    _connections.forEach((id, connection) {
+      try {
+        // Enviar un ping para verificar la conexión
+        connection.add(json.encode({
+          'type': 'ping',
+          'timestamp': DateTime.now().millisecondsSinceEpoch,
+        }));
+      } catch (e) {
+        print('Conexión perdida con dispositivo $id: $e');
+        _handleDisconnection(id);
+      }
+    });
   }
 
   void _onInteractionUpdate(ScaleUpdateDetails details) {
@@ -829,142 +1035,133 @@ class _WifiSyncHomeState extends State<WifiSyncHome> {
   }
 
   Widget _buildImageView() {
+    // Si es líder y no hay imagen, mostrar QR
     if ((_imageBytes == null || _uiImage == null) && _isLeader!) {
       return _buildQRCodeView();
     }
 
+    // Si es vinculado y no ha escaneado QR, mostrar scanner
     if (!_isLeader! && !_isQRCodeScanned) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         _scanQRCode();
       });
-      return Center(child: CircularProgressIndicator());
+      return const Center(child: CircularProgressIndicator());
     }
 
+    // Si es vinculado, ha escaneado QR pero no hay imagen, mostrar espera
     if ((_imageBytes == null || _uiImage == null) &&
         !_isLeader! &&
         _isQRCodeScanned) {
-      return Center(
-        child: Text(
-          'Esperando una imagen...',
-        ),
+      return const Center(
+        child: Text('Esperando una imagen...'),
       );
     }
 
+    // Si hay imagen, construir la vista interactiva
     return LayoutBuilder(
       builder: (context, constraints) {
-        return GestureDetector(
-          onHorizontalDragStart: _isReadyToShare && !_isFreeSliding
-              ? _onHorizontalDragStart
-              : null,
-          onHorizontalDragUpdate: _isReadyToShare && !_isFreeSliding
-              ? _onHorizontalDragUpdate
-              : null,
-          onHorizontalDragEnd:
-              _isReadyToShare && !_isFreeSliding ? _onHorizontalDragEnd : null,
-          onVerticalDragStart:
-              _isReadyToShare && !_isFreeSliding ? _onVerticalDragStart : null,
-          onVerticalDragUpdate:
-              _isReadyToShare && !_isFreeSliding ? _onVerticalDragUpdate : null,
-          onVerticalDragEnd:
-              _isReadyToShare && !_isFreeSliding ? _onVerticalDragEnd : null,
-          child: InteractiveViewer(
-            transformationController:
-                TransformationController(_deviceSpecificTransform),
-            onInteractionUpdate: _onInteractionUpdate,
-            maxScale: 10.0,
-            child: CustomPaint(
-              painter: ImagePainter(
-                image: _uiImage!,
-                initialViewport: _initialViewport,
-                showHighlight:
-                    !_isFreeSliding, // Solo mostrar el resaltado cuando no esté en modo de deslizamiento libre
-              ),
-              size:
-                  Size(_uiImage!.width.toDouble(), _uiImage!.height.toDouble()),
+        // Solo aplicar gestos si la imagen existe
+        if (_uiImage == null) return const SizedBox.shrink();
+
+        Widget imageView = InteractiveViewer(
+          transformationController:
+              TransformationController(_deviceSpecificTransform),
+          onInteractionUpdate: _onInteractionUpdate,
+          maxScale: 10.0,
+          child: CustomPaint(
+            painter: ImagePainter(
+              image: _uiImage!,
+              initialViewport: _initialViewport,
+              showHighlight: !_isFreeSliding,
             ),
+            size: Size(_uiImage!.width.toDouble(), _uiImage!.height.toDouble()),
           ),
         );
+
+        // Solo envolver en GestureDetector si está listo para compartir y no está en modo libre
+        if (_isReadyToShare && !_isFreeSliding) {
+          return GestureDetector(
+            onHorizontalDragStart: _onHorizontalDragStart,
+            onHorizontalDragUpdate: _onHorizontalDragUpdate,
+            onHorizontalDragEnd: _onHorizontalDragEnd,
+            child: imageView,
+          );
+        }
+
+        return imageView;
       },
     );
   }
 
   // HORIZONTAL
   void _onHorizontalDragStart(DragStartDetails details) {
-    _startHorizontalDragX = details.localPosition.dx;
-    _isLocalSwiping = true;
+    if (!_isReadyToShare || _isFreeSliding) return;
+
+    print('Iniciando deslizamiento horizontal');
+    setState(() {
+      _startHorizontalDragX = details.localPosition.dx;
+      _isLocalSwiping = true;
+      _isSwipeInProgress = true;
+      _lastSwipeTimestamps['local'] = DateTime.now();
+    });
+
     _broadcastSimultaneousSwipe(true);
-    _startSwipeTimer();
-  }
 
-  void _onHorizontalDragUpdate(DragUpdateDetails details) {
-    if (!_isLocalSwiping) return;
-
-    double currentX = details.localPosition.dx;
-    double dragDistance = currentX - _startHorizontalDragX;
-
-    setState(() {
-      _isSwipingLeft = dragDistance < -20;
-      _isSwipingRight = dragDistance > 20;
-    });
-
-    _resetSwipeTimer();
-  }
-
-  void _onHorizontalDragEnd(DragEndDetails details) {
-    _isLocalSwiping = false;
-    _broadcastSimultaneousSwipe(false);
-    _cancelSwipeTimer();
-
-    setState(() {
-      _isSwipingLeft = false;
-      _isSwipingRight = false;
-    });
-  }
-
-  // VERTICAL
-  void _onVerticalDragStart(DragStartDetails details) {
-    _startVerticalDragY = details.localPosition.dy;
-  }
-
-  void _onVerticalDragUpdate(DragUpdateDetails details) {
-    double currentY = details.localPosition.dy;
-    double dragDistance = currentY - _startVerticalDragY;
-
-    setState(() {
-      _isSwipingDown = dragDistance < -20;
-      _isSwipingUp = dragDistance > 20;
-    });
-  }
-
-  void _onVerticalDragEnd(DragEndDetails details) {
-    if (_isReadyToShare &&
-        _allDevicesReady &&
-        (_isSwipingDown || _isSwipingUp)) {
-      _initiateImageSharing();
-    }
-    _broadcastSwipeGesture(_isSwipingDown ? 'down' : 'up');
-
-    setState(() {
-      _isSwipingDown = false;
-      _isSwipingUp = false;
-    });
-  }
-
-  // TIMER SWIPE
-  void _startSwipeTimer() {
-    _swipeTimer = Timer(Duration(milliseconds: 500), () {
-      _isLocalSwiping = false;
+    // Reiniciar el temporizador de timeout
+    _swipeTimeoutTimer?.cancel();
+    _swipeTimeoutTimer = Timer(swipeTimeout, () {
+      print('Timeout de deslizamiento');
+      setState(() {
+        _isLocalSwiping = false;
+        _isSwipeInProgress = false;
+      });
       _broadcastSimultaneousSwipe(false);
     });
   }
 
-  void _resetSwipeTimer() {
-    _cancelSwipeTimer();
-    _startSwipeTimer();
+  void _onHorizontalDragUpdate(DragUpdateDetails details) {
+    if (!_isSwipeInProgress) return;
+
+    double currentX = details.localPosition.dx;
+    double dragDistance = currentX - _startHorizontalDragX;
+
+    // Actualizar dirección del deslizamiento
+    setState(() {
+      _isSwipingLeft = dragDistance < -20;
+      _isSwipingRight = dragDistance > 20;
+      _lastSwipeTimestamps['local'] = DateTime.now();
+    });
+
+    if (_isSwipingLeft || _isSwipingRight) {
+      _broadcastSwipeGesture(_isSwipingLeft ? 'left' : 'right');
+      _checkSimultaneousSwipe();
+    }
+
+    // Resetear el temporizador de timeout
+    _swipeTimeoutTimer?.cancel();
+    _swipeTimeoutTimer = Timer(swipeTimeout, () {
+      setState(() {
+        _isLocalSwiping = false;
+        _isSwipeInProgress = false;
+      });
+      _broadcastSimultaneousSwipe(false);
+    });
   }
 
-  void _cancelSwipeTimer() {
-    _swipeTimer?.cancel();
+  void _onHorizontalDragEnd(DragEndDetails details) {
+    if (!_isReadyToShare || _isFreeSliding) return;
+
+    print('Finalizando deslizamiento horizontal');
+    _swipeTimeoutTimer?.cancel();
+
+    setState(() {
+      _isLocalSwiping = false;
+      _isSwipeInProgress = false;
+      _isSwipingLeft = false;
+      _isSwipingRight = false;
+    });
+
+    _broadcastSimultaneousSwipe(false);
   }
 
   void _broadcastSwipeGesture(String direction) {
@@ -978,12 +1175,27 @@ class _WifiSyncHomeState extends State<WifiSyncHome> {
   }
 
   void _broadcastSimultaneousSwipe(bool isSwipping) {
+    if (_connections.isEmpty) {
+      print('No hay dispositivos conectados para transmitir el deslizamiento');
+      return;
+    }
+
     final swipeData = {
       'type': 'swipe_simultaneous',
       'isSwipping': isSwipping,
     };
-    for (var connection in _connections.values) {
-      connection.add(json.encode(swipeData));
+
+    print(
+        'Enviando estado de deslizamiento: $isSwipping a ${_connections.length} dispositivos');
+
+    for (var entry in _connections.entries) {
+      try {
+        entry.value.add(json.encode(swipeData));
+        _connectionStates[entry.key]?.isSwipping = isSwipping;
+      } catch (e) {
+        print('Error al enviar estado de deslizamiento a ${entry.key}: $e');
+        _handleDisconnection(entry.key);
+      }
     }
   }
 
@@ -1027,10 +1239,14 @@ class _WifiSyncHomeState extends State<WifiSyncHome> {
 
   @override
   void dispose() {
+    _pingTimer?.cancel();
     for (var connection in _connections.values) {
-      connection.close();
+      try {
+        connection.close();
+      } catch (e) {
+        print('Error closing connection: $e');
+      }
     }
-    _syncTimer?.cancel();
     super.dispose();
   }
 }
