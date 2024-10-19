@@ -28,14 +28,12 @@
 // }
 
 import 'dart:async';
-import 'dart:developer';
 import 'dart:typed_data';
 import 'dart:ui' as ui;
 import 'dart:math' as math;
 
 import 'package:crossdevice/auth/login_screen.dart';
 import 'package:crossdevice/chooserole_screen.dart';
-import 'package:crossdevice/navbar.dart';
 import 'package:crossdevice/scan_qr.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_core/firebase_core.dart';
@@ -43,7 +41,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter_speed_dial/flutter_speed_dial.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:qr_flutter/qr_flutter.dart';
-import 'package:qr_code_scanner/qr_code_scanner.dart';
 import 'package:network_info_plus/network_info_plus.dart';
 import 'dart:convert';
 import 'dart:io';
@@ -520,8 +517,18 @@ class _WifiSyncHomeState extends State<WifiSyncHome> {
               messageData['deviceId'], messageData['portion']);
           break;
         case 'sync_gesture':
-          if (_isGestureSyncEnabled) {
-            _handleSyncGesture(messageData);
+          if (_isGestureSyncEnabled && _isSharing) {
+            final String senderId = messageData['senderId'] ?? '';
+
+            // Si somos el Leader, reenviamos a todos los demás dispositivos
+            if (_isLeader!) {
+              _forwardGestureToAllDevices(messageData, senderId);
+            }
+
+            // Aplicar el gesto si no somos el emisor original
+            if (senderId != user.currentUser?.email) {
+              _handleSyncGesture(messageData);
+            }
           }
           break;
         case 'swipe_gesture':
@@ -557,6 +564,33 @@ class _WifiSyncHomeState extends State<WifiSyncHome> {
       }
     } catch (e) {
       print('Error handling message: $e');
+    }
+  }
+
+  void _forwardGestureToAllDevices(
+      Map<String, dynamic> gestureData, String originalSenderId) {
+    if (!_isLeader! || !_isSharing) return;
+
+    final forwardedData = {
+      ...gestureData,
+      'forwarded': true,
+      'originalSenderId': originalSenderId,
+      'timestamp': DateTime.now().millisecondsSinceEpoch,
+    };
+
+    print(
+        'Leader reenviando gesto de $originalSenderId a todos los dispositivos');
+
+    // Enviar a todos los dispositivos excepto al remitente original
+    for (var entry in _connections.entries) {
+      if (!forwardedData.containsKey('recipientId') ||
+          forwardedData['recipientId'] == entry.key) {
+        try {
+          entry.value.add(json.encode(forwardedData));
+        } catch (e) {
+          print('Error al reenviar gesto a ${entry.key}: $e');
+        }
+      }
     }
   }
 
@@ -765,9 +799,7 @@ class _WifiSyncHomeState extends State<WifiSyncHome> {
       size: Size(width, height),
     );
     connectedDevices.add(newDevice);
-    if (myDevice == null) {
-      myDevice = newDevice;
-    }
+    myDevice ??= newDevice;
     _calculateImagePortions();
   }
 
@@ -909,12 +941,19 @@ class _WifiSyncHomeState extends State<WifiSyncHome> {
   }
 
   void _handleSyncGesture(Map<String, dynamic> gestureData) {
+    if (!_isSharing) return;
+
+    // Evitar aplicar el gesto si somos el emisor original
+    if (gestureData['senderId'] == user.currentUser?.email) {
+      return;
+    }
+
     final delta = Offset(gestureData['deltaX'], gestureData['deltaY']);
     final scale = gestureData['scale'];
     final focalPoint =
         Offset(gestureData['focalPointX'], gestureData['focalPointY']);
 
-    // Aplicar la transformación sin importar el estado de deslizamiento libre
+    print('Aplicando gesto recibido de ${gestureData['senderId']}');
     _applyTransformation(delta, scale, focalPoint);
   }
 
@@ -1012,19 +1051,22 @@ class _WifiSyncHomeState extends State<WifiSyncHome> {
   }
 
   void _onInteractionUpdate(ScaleUpdateDetails details) {
-    if (_uiImage != null) {
+    if (_uiImage != null && _isSharing && _isGestureSyncEnabled) {
       final delta = details.focalPointDelta;
       final scale = details.scale;
       final focalPoint = details.localFocalPoint;
 
+      // Aplicar transformación local
       _applyTransformation(delta, scale, focalPoint);
 
-      // Siempre sincronizar gestos, independientemente del estado de deslizamiento libre
+      // Broadcast del gesto
       _broadcastGesture(delta, scale, focalPoint);
     }
   }
 
   void _broadcastGesture(Offset delta, double scale, Offset focalPoint) {
+    if (!_isSharing) return;
+
     final gestureData = {
       'type': 'sync_gesture',
       'deltaX': delta.dx,
@@ -1032,14 +1074,27 @@ class _WifiSyncHomeState extends State<WifiSyncHome> {
       'scale': scale,
       'focalPointX': focalPoint.dx,
       'focalPointY': focalPoint.dy,
+      'senderId': user.currentUser?.email,
+      'timestamp': DateTime.now().millisecondsSinceEpoch,
     };
 
-    for (var connection in _connections.values) {
-      connection.add(json.encode(gestureData));
+    // Si somos un dispositivo Linked, enviamos solo al Leader
+    if (!_isLeader!) {
+      print('Dispositivo Linked enviando gesto al Leader');
+      for (var connection in _connections.values) {
+        connection.add(json.encode(gestureData));
+      }
+    } else {
+      // Si somos el Leader, enviamos a todos
+      print('Leader enviando gesto a todos los dispositivos');
+      _forwardGestureToAllDevices(
+          gestureData, user.currentUser?.email ?? 'unknown');
     }
   }
 
   void _applyTransformation(Offset delta, double scale, Offset focalPoint) {
+    if (!_isSharing) return;
+
     final Matrix4 newTransform = Matrix4.copy(_deviceSpecificTransform);
 
     // Aplicar traslación
