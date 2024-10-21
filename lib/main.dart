@@ -34,16 +34,17 @@ import 'dart:math' as math;
 
 import 'package:crossdevice/auth/login_screen.dart';
 import 'package:crossdevice/chooserole_screen.dart';
+import 'package:crossdevice/qr_code_view.dart';
 import 'package:crossdevice/scan_qr.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_speed_dial/flutter_speed_dial.dart';
 import 'package:image_picker/image_picker.dart';
-import 'package:qr_flutter/qr_flutter.dart';
-import 'package:network_info_plus/network_info_plus.dart';
 import 'dart:convert';
 import 'dart:io';
+
+import 'package:vector_math/vector_math_64.dart' hide Colors;
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -71,40 +72,14 @@ class WifiSyncHome extends StatefulWidget {
   _WifiSyncHomeState createState() => _WifiSyncHomeState();
 }
 
-class DeviceInfo {
-  final String id;
-  Rect portion;
-  Size size;
-
-  DeviceInfo({required this.id, required this.portion, required this.size});
-}
-
-class ConnectionState {
-  bool isConnected;
-  DateTime lastActivity;
-  bool isSwipping;
-
-  ConnectionState({
-    this.isConnected = false,
-    DateTime? lastActivity,
-    this.isSwipping = false,
-  }) : this.lastActivity = lastActivity ?? DateTime.now();
-}
-
 class _WifiSyncHomeState extends State<WifiSyncHome> {
-  final NetworkInfo _networkInfo = NetworkInfo();
   final user = FirebaseAuth.instance;
   Map<String, WebSocket> _connections = {};
 
-  bool _isServerRunning = false;
-  String _localIp = '';
-  String _debugInfo = '';
   HttpServer? _server;
 
   Uint8List? _imageBytes;
   bool _isSharing = false;
-  TransformationController _transformationController =
-      TransformationController();
   ui.Image? _uiImage;
 
   Rect? _initialViewport;
@@ -120,8 +95,11 @@ class _WifiSyncHomeState extends State<WifiSyncHome> {
 
   bool _allDevicesReady = false;
   double _startHorizontalDragX = 0;
+  double _startVerticalDragY = 0;
   bool _isSwipingLeft = false;
   bool _isSwipingRight = false;
+  bool _isSwipingDown = false;
+  bool _isSwipingUp = false;
 
   bool _isFreeSliding = true;
 
@@ -129,8 +107,6 @@ class _WifiSyncHomeState extends State<WifiSyncHome> {
 
   bool? _isLeader;
   bool _isQRCodeScanned = false;
-
-  bool _isImageDraggingEnabled = true;
 
   Map<String, bool> _devicesSwipingState = {};
   bool _isLocalSwiping = false;
@@ -153,15 +129,16 @@ class _WifiSyncHomeState extends State<WifiSyncHome> {
 
   String? _activeLinkedDeviceId;
 
+  late TransformationController _transformationController;
+
   @override
   void initState() {
     super.initState();
-    _transformationController = TransformationController();
-    _getLocalIp();
     _startServer();
     _startPingTimer();
     _roleSwipeStates['leader'] = false;
     _roleSwipeStates['linked'] = false;
+    _transformationController = TransformationController();
     //_initializeLocalDevice();
   }
 
@@ -221,24 +198,9 @@ class _WifiSyncHomeState extends State<WifiSyncHome> {
     _addDebugInfo('Local device initialized: $deviceId');
   }
 
-  void _getLocalIp() async {
-    String? ip = await _networkInfo.getWifiIP();
-    if (ip != null) {
-      setState(() {
-        _localIp = ip;
-        _addDebugInfo('Local IP: $ip');
-      });
-    } else {
-      _addDebugInfo('Failed to get local IP');
-    }
-  }
-
   void _startServer() async {
     try {
       _server = await HttpServer.bind(InternetAddress.anyIPv4, 8080);
-      setState(() {
-        _isServerRunning = true;
-      });
       _addDebugInfo('Server started on port 8080');
       _server!.transform(WebSocketTransformer()).listen(_handleConnection);
     } catch (e) {
@@ -347,10 +309,15 @@ class _WifiSyncHomeState extends State<WifiSyncHome> {
   }
 
   void _toggleReadyToShare() {
+    _updateInitialViewportFromTransform(_transformationController.value);
     setState(() {
       _isReadyToShare = !_isReadyToShare;
       _isFreeSliding = !_isReadyToShare;
-      _isImageDraggingEnabled = true; // Siempre permitir el arrastre de imagen
+
+      // Actualizar el viewport inicial basado en la transformación actual
+      // if (_isReadyToShare) {
+      //   _updateInitialViewportFromTransform(_transformationController.value);
+      // }
     });
     _broadcastReadyState();
 
@@ -361,6 +328,37 @@ class _WifiSyncHomeState extends State<WifiSyncHome> {
     }
 
     _checkAllDevicesReady();
+  }
+
+  void _updateInitialViewportFromTransform(Matrix4 transform) {
+    if (_uiImage == null) return;
+
+    final Size screenSize = MediaQuery.of(context).size;
+    final double scale = transform.getMaxScaleOnAxis();
+    final Vector3 translation = transform.getTranslation();
+
+    // Calcular las dimensiones del viewport visible
+    double viewportWidth = screenSize.width / scale;
+    double viewportHeight = screenSize.height / scale;
+
+    // Calcular la posición del viewport
+    double viewportX = -translation.x / scale;
+    double viewportY = -translation.y / scale;
+
+    // Asegurarse de que el viewport no se salga de los límites de la imagen
+    viewportX =
+        viewportX.clamp(0.0, _uiImage!.width.toDouble() - viewportWidth);
+    viewportY =
+        viewportY.clamp(0.0, _uiImage!.height.toDouble() - viewportHeight);
+
+    setState(() {
+      _initialViewport = Rect.fromLTWH(
+        viewportX,
+        viewportY,
+        viewportWidth,
+        viewportHeight,
+      );
+    });
   }
 
   void _setAllDevicesNotReady() {
@@ -427,8 +425,8 @@ class _WifiSyncHomeState extends State<WifiSyncHome> {
           _isSharing = true;
           _isGestureSyncEnabled = true;
           _hasImage = true;
-          // _isFreeSliding =
-          //     true; // Habilitar modo de deslizamiento libre después de compartir
+          _isFreeSliding =
+              false; // Habilitar modo de deslizamiento libre después de compartir
         });
       } catch (e) {
         print('Error al compartir imagen: $e');
@@ -728,6 +726,8 @@ class _WifiSyncHomeState extends State<WifiSyncHome> {
         _isLocalSwiping = false;
         _isSwipingLeft = false;
         _isSwipingRight = false;
+        _isSwipingDown = false;
+        _isSwipingUp = false;
         _activeLinkedDeviceId = null; // Reset the active device
       });
     } else {
@@ -948,10 +948,11 @@ class _WifiSyncHomeState extends State<WifiSyncHome> {
       return;
     }
 
-    final delta = Offset(gestureData['deltaX'], gestureData['deltaY']);
-    final scale = gestureData['scale'];
-    final focalPoint =
-        Offset(gestureData['focalPointX'], gestureData['focalPointY']);
+    final delta = Offset((gestureData['deltaX'] as num).toDouble(),
+        (gestureData['deltaY'] as num).toDouble());
+    final scale = (gestureData['scale'] as num).toDouble();
+    final focalPoint = Offset((gestureData['focalPointX'] as num).toDouble(),
+        (gestureData['focalPointY'] as num).toDouble());
 
     print('Aplicando gesto recibido de ${gestureData['senderId']}');
     _applyTransformation(delta, scale, focalPoint);
@@ -1059,6 +1060,11 @@ class _WifiSyncHomeState extends State<WifiSyncHome> {
       // Aplicar transformación local
       _applyTransformation(delta, scale, focalPoint);
 
+      // Actualizar el viewport si estamos en modo Match
+      if (_isReadyToShare) {
+        _updateInitialViewportFromTransform(_deviceSpecificTransform);
+      }
+
       // Broadcast del gesto
       _broadcastGesture(delta, scale, focalPoint);
     }
@@ -1095,7 +1101,8 @@ class _WifiSyncHomeState extends State<WifiSyncHome> {
   void _applyTransformation(Offset delta, double scale, Offset focalPoint) {
     if (!_isSharing) return;
 
-    final Matrix4 newTransform = Matrix4.copy(_deviceSpecificTransform);
+    final Matrix4 currentTransform = _transformationController.value;
+    final Matrix4 newTransform = Matrix4.copy(currentTransform);
 
     // Aplicar traslación
     newTransform.translate(delta.dx, delta.dy);
@@ -1119,14 +1126,14 @@ class _WifiSyncHomeState extends State<WifiSyncHome> {
     }
 
     setState(() {
-      _deviceSpecificTransform = newTransform;
+      _transformationController.value = newTransform;
+      if (_isReadyToShare) {
+        _updateInitialViewportFromTransform(newTransform);
+      }
     });
   }
 
   void _addDebugInfo(String info) {
-    setState(() {
-      _debugInfo += '$info\n';
-    });
     print(info);
   }
 
@@ -1156,21 +1163,27 @@ class _WifiSyncHomeState extends State<WifiSyncHome> {
                       });
                     },
                   )),
-              body: Center(
-                  child: _isLeader! ? _buildImageView() : _buildImageView()),
+              body: Center(child: _buildImageView()),
               floatingActionButton: _isLeader!
                   ? SpeedDial(
                       animatedIcon: AnimatedIcons.menu_close,
                       overlayColor: Colors.black,
                       overlayOpacity: 0.5,
                       children: [
-                        SpeedDialChild(
-                          child: Icon(_isReadyToShare
-                              ? Icons.share
-                              : Icons.share_outlined),
-                          label: 'Match',
-                          onTap: () => _toggleReadyToShare(),
-                        ),
+                        if (_hasImage)
+                          SpeedDialChild(
+                            child: Icon(_isReadyToShare
+                                ? Icons.share
+                                : Icons.share_outlined),
+                            label: 'Match',
+                            onTap: () => _toggleReadyToShare(),
+                          ),
+                        if (_hasImage)
+                          SpeedDialChild(
+                            child: Icon(Icons.qr_code),
+                            label: 'View QR',
+                            onTap: () => _showQRCodeDialog(),
+                          ),
                         SpeedDialChild(
                           child: Icon(Icons.add_photo_alternate),
                           label: 'Add image',
@@ -1186,7 +1199,7 @@ class _WifiSyncHomeState extends State<WifiSyncHome> {
   Widget _buildImageView() {
     // Si es líder y no hay imagen, mostrar QR
     if ((_imageBytes == null || _uiImage == null) && _isLeader!) {
-      return _buildQRCodeView();
+      return QrCodeView();
     }
 
     // Si es vinculado y no ha escaneado QR, mostrar scanner
@@ -1197,16 +1210,19 @@ class _WifiSyncHomeState extends State<WifiSyncHome> {
       return const Center(child: CircularProgressIndicator());
     }
 
-    // Si es vinculado, ha escaneado QR pero no hay imagen, mostrar espera
+    // Si es vinculado, ha escaneado QR pero no hay imagen
     if ((_imageBytes == null || _uiImage == null) &&
         !_isLeader! &&
         _isQRCodeScanned) {
       // print(
       //     'Mostrando mensaje de espera...');
       return GestureDetector(
-        onHorizontalDragStart: _onHorizontalDragStart,
-        onHorizontalDragUpdate: _onHorizontalDragUpdate,
-        onHorizontalDragEnd: _onHorizontalDragEnd,
+        onHorizontalDragStart: _onPanDragStart,
+        onHorizontalDragUpdate: _onPanDragUpdate,
+        onHorizontalDragEnd: _onPanDragEnd,
+        onVerticalDragStart: _onPanDragStart,
+        onVerticalDragUpdate: _onPanDragUpdate,
+        onVerticalDragEnd: _onPanDragEnd,
         child: Container(
           width: MediaQuery.of(context).size.width,
           height: MediaQuery.of(context).size.height,
@@ -1222,16 +1238,23 @@ class _WifiSyncHomeState extends State<WifiSyncHome> {
         // Solo aplicar gestos si la imagen existe
         if (_uiImage == null) return const SizedBox.shrink();
 
+        // Obtener el tamaño de la pantalla
+        final Size screenSize = MediaQuery.of(context).size;
+
         Widget imageView = InteractiveViewer(
-          transformationController:
-              TransformationController(_deviceSpecificTransform),
-          onInteractionUpdate: _onInteractionUpdate,
-          maxScale: 10.0,
+          transformationController: _transformationController,
+          boundaryMargin: EdgeInsets.all(double.infinity),
+          onInteractionUpdate: _isReadyToShare ? null : _onInteractionUpdate,
+          maxScale: 1.5,
+          scaleEnabled: !_isReadyToShare,
+          panEnabled: !_isReadyToShare,
           child: CustomPaint(
             painter: ImagePainter(
               image: _uiImage!,
               initialViewport: _initialViewport,
               showHighlight: !_isFreeSliding,
+              currentTransform: _transformationController.value,
+              screenSize: screenSize,
             ),
             size: Size(_uiImage!.width.toDouble(), _uiImage!.height.toDouble()),
           ),
@@ -1240,9 +1263,12 @@ class _WifiSyncHomeState extends State<WifiSyncHome> {
         // Permitir gestos si está listo para compartir y no está en modo libre
         if (_isReadyToShare && !_isFreeSliding) {
           return GestureDetector(
-            onHorizontalDragStart: _onHorizontalDragStart,
-            onHorizontalDragUpdate: _onHorizontalDragUpdate,
-            onHorizontalDragEnd: _onHorizontalDragEnd,
+            onHorizontalDragStart: _onPanDragStart,
+            onHorizontalDragUpdate: _onPanDragUpdate,
+            onHorizontalDragEnd: _onPanDragEnd,
+            onVerticalDragStart: _onPanDragStart,
+            onVerticalDragUpdate: _onPanDragUpdate,
+            onVerticalDragEnd: _onPanDragEnd,
             child: imageView,
           );
         }
@@ -1253,15 +1279,16 @@ class _WifiSyncHomeState extends State<WifiSyncHome> {
   }
 
   // HORIZONTAL
-  void _onHorizontalDragStart(DragStartDetails details) {
+  void _onPanDragStart(DragStartDetails details) {
     if (!_isReadyToShare || _isFreeSliding) return;
 
     String localRole = _isLeader! ? 'leader' : 'linked';
-    print('\nIniciando deslizamiento horizontal:');
+    print('\nIniciando deslizamiento:');
     print('- Rol: $localRole');
 
     setState(() {
       _startHorizontalDragX = details.localPosition.dx;
+      _startVerticalDragY = details.localPosition.dy;
       _isLocalSwiping = true;
       _isSwipeInProgress = true;
       _lastSwipeTimestamps['local'] = DateTime.now();
@@ -1278,21 +1305,28 @@ class _WifiSyncHomeState extends State<WifiSyncHome> {
     });
   }
 
-  void _onHorizontalDragUpdate(DragUpdateDetails details) {
+  void _onPanDragUpdate(DragUpdateDetails details) {
     if (!_isSwipeInProgress) return;
 
     double currentX = details.localPosition.dx;
-    double dragDistance = currentX - _startHorizontalDragX;
+    double dragDistanceX = currentX - _startHorizontalDragX;
+    double currentY = details.localPosition.dy;
+    double dragDistanceY = currentY - _startVerticalDragY;
 
     // Actualizar dirección del deslizamiento
     setState(() {
-      _isSwipingLeft = dragDistance < -20;
-      _isSwipingRight = dragDistance > 20;
+      _isSwipingLeft = dragDistanceX < -20;
+      _isSwipingRight = dragDistanceX > 20;
+      _isSwipingDown = dragDistanceY < -20;
+      _isSwipingUp = dragDistanceY > 20;
       _lastSwipeTimestamps['local'] = DateTime.now();
     });
 
     if (_isSwipingLeft || _isSwipingRight) {
       _broadcastSwipeGesture(_isSwipingLeft ? 'left' : 'right');
+      _checkSimultaneousSwipe();
+    } else if (_isSwipingDown || _isSwipingUp) {
+      _broadcastSwipeGesture(_isSwipingDown ? 'down' : 'up');
       _checkSimultaneousSwipe();
     }
 
@@ -1307,11 +1341,11 @@ class _WifiSyncHomeState extends State<WifiSyncHome> {
     });
   }
 
-  void _onHorizontalDragEnd(DragEndDetails details) {
+  void _onPanDragEnd(DragEndDetails details) {
     if (!_isReadyToShare || _isFreeSliding) return;
 
     print(
-        'Finalizando deslizamiento horizontal en rol: ${_isLeader! ? 'leader' : 'linked'}');
+        'Finalizando deslizamiento en rol: ${_isLeader! ? 'leader' : 'linked'}');
     _resetSwipeState();
   }
 
@@ -1336,6 +1370,8 @@ class _WifiSyncHomeState extends State<WifiSyncHome> {
       _isSwipeInProgress = false;
       _isSwipingLeft = false;
       _isSwipingRight = false;
+      _isSwipingDown = false;
+      _isSwipingUp = false;
       _lastSwipeTimestamps.remove('local');
       if (!_isLeader!) {
         _activeLinkedDeviceId = null;
@@ -1369,28 +1405,6 @@ class _WifiSyncHomeState extends State<WifiSyncHome> {
     }
   }
 
-  Widget _buildQRCodeView() {
-    return Center(
-      child: Container(
-        constraints: BoxConstraints(
-          maxWidth: 300,
-          maxHeight: 300,
-        ),
-        child: SizedBox(
-          width: 250,
-          height: 250,
-          child: QrImageView(
-            data: json.encode({
-              'ip': _localIp
-            }), // Aquí puedes pasar el dato que desees mostrar en el QR
-            version: QrVersions.auto,
-            size: 250.0,
-          ),
-        ),
-      ),
-    );
-  }
-
   void _scanQRCode() {
     Navigator.of(context).push(
       MaterialPageRoute(
@@ -1407,8 +1421,27 @@ class _WifiSyncHomeState extends State<WifiSyncHome> {
     );
   }
 
+  void _showQRCodeDialog() {
+    showDialog(
+      context: context,
+      builder: (BuildContext context) {
+        return Dialog(
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(10),
+          ),
+          child: SizedBox(
+            width: 300,
+            height: 300,
+            child: QrCodeView(),
+          ),
+        );
+      },
+    );
+  }
+
   @override
   void dispose() {
+    _transformationController.dispose();
     _pingTimer?.cancel();
     for (var connection in _connections.values) {
       try {
@@ -1425,11 +1458,15 @@ class ImagePainter extends CustomPainter {
   final ui.Image image;
   final Rect? initialViewport;
   final bool showHighlight;
+  final Matrix4? currentTransform;
+  final Size screenSize;
 
   ImagePainter({
     required this.image,
     this.initialViewport,
     this.showHighlight = true,
+    this.currentTransform,
+    required this.screenSize,
   });
 
   @override
@@ -1437,17 +1474,35 @@ class ImagePainter extends CustomPainter {
     final paint = Paint();
     canvas.drawImage(image, Offset.zero, paint);
 
-    if (showHighlight && initialViewport != null) {
+    if (showHighlight && currentTransform != null) {
       final highlightPaint = Paint()
         ..color = Colors.yellow.withOpacity(0.3)
         ..style = PaintingStyle.fill;
 
+      // Calcular el viewport visible
+      final Vector3 translation = currentTransform!.getTranslation();
+      final double scale = currentTransform!.getMaxScaleOnAxis();
+
+      // Calcular las dimensiones del viewport visible
+      double viewportWidth = screenSize.width / scale;
+      double viewportHeight = screenSize.height / scale;
+
+      // Calcular la posición del viewport
+      double viewportX = -translation.x / scale;
+      double viewportY = -translation.y / scale;
+
+      // Asegurarse de que el viewport no se salga de los límites de la imagen
+      viewportX = viewportX.clamp(0.0, image.width.toDouble() - viewportWidth);
+      viewportY =
+          viewportY.clamp(0.0, image.height.toDouble() - viewportHeight);
+
+      // Dibujar el highlight solo en el área visible
       canvas.drawRect(
         Rect.fromLTWH(
-          initialViewport!.left * image.width,
-          initialViewport!.top * image.height,
-          initialViewport!.width * image.width,
-          initialViewport!.height * image.height,
+          viewportX,
+          viewportY,
+          viewportWidth,
+          viewportHeight,
         ),
         highlightPaint,
       );
@@ -1458,6 +1513,28 @@ class ImagePainter extends CustomPainter {
   bool shouldRepaint(covariant ImagePainter oldDelegate) {
     return oldDelegate.image != image ||
         oldDelegate.initialViewport != initialViewport ||
-        oldDelegate.showHighlight != showHighlight;
+        oldDelegate.showHighlight != showHighlight ||
+        oldDelegate.currentTransform != currentTransform ||
+        oldDelegate.screenSize != screenSize;
   }
+}
+
+class DeviceInfo {
+  final String id;
+  Rect portion;
+  Size size;
+
+  DeviceInfo({required this.id, required this.portion, required this.size});
+}
+
+class ConnectionState {
+  bool isConnected;
+  DateTime lastActivity;
+  bool isSwipping;
+
+  ConnectionState({
+    this.isConnected = false,
+    DateTime? lastActivity,
+    this.isSwipping = false,
+  }) : this.lastActivity = lastActivity ?? DateTime.now();
 }

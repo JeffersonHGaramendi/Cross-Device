@@ -3,7 +3,6 @@ import 'dart:developer';
 import 'package:crossdevice/auth/login_screen.dart';
 import 'package:crossdevice/main.dart';
 import 'package:firebase_auth/firebase_auth.dart';
-import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/material.dart';
 
 class SignupScreen extends StatefulWidget {
@@ -98,11 +97,16 @@ class _SignupScreenState extends State<SignupScreen> {
       );
 
   _signup() async {
-    final user = await FirebaseAuth.instance.createUserWithEmailAndPassword(
-        email: _email.text, password: _password.text);
-    if (user != null) {
-      log("User Created Succesfully");
+    try {
+      await FirebaseAuth.instance.createUserWithEmailAndPassword(
+        email: _email.text,
+        password: _password.text,
+      );
+
+      log("User Created Successfully");
       homeScreenFromSignUp(context);
+    } catch (e) {
+      log("Error creating user: $e");
     }
   }
 }
