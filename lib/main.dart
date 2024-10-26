@@ -28,9 +28,10 @@
 // }
 
 import 'dart:async';
+import 'dart:developer';
 import 'dart:typed_data';
 import 'dart:ui' as ui;
-import 'dart:math' as math;
+// import 'dart:math' as math;
 
 import 'package:crossdevice/auth/login_screen.dart';
 import 'package:crossdevice/chooserole_screen.dart';
@@ -87,8 +88,6 @@ class _WifiSyncHomeState extends State<WifiSyncHome> {
   List<DeviceInfo> connectedDevices = [];
   DeviceInfo? myDevice;
 
-  Matrix4 _deviceSpecificTransform = Matrix4.identity();
-
   bool _isReadyToShare = false;
   bool _hasImage = false;
   Map<String, bool> _connectedDevicesReadyState = {};
@@ -131,6 +130,8 @@ class _WifiSyncHomeState extends State<WifiSyncHome> {
 
   late TransformationController _transformationController;
 
+  String? _direction;
+
   @override
   void initState() {
     super.initState();
@@ -139,7 +140,6 @@ class _WifiSyncHomeState extends State<WifiSyncHome> {
     _roleSwipeStates['leader'] = false;
     _roleSwipeStates['linked'] = false;
     _transformationController = TransformationController();
-    //_initializeLocalDevice();
   }
 
   @override
@@ -309,15 +309,14 @@ class _WifiSyncHomeState extends State<WifiSyncHome> {
   }
 
   void _toggleReadyToShare() {
-    _updateInitialViewportFromTransform(_transformationController.value);
     setState(() {
       _isReadyToShare = !_isReadyToShare;
       _isFreeSliding = !_isReadyToShare;
 
       // Actualizar el viewport inicial basado en la transformación actual
-      // if (_isReadyToShare) {
-      //   _updateInitialViewportFromTransform(_transformationController.value);
-      // }
+      if (_isReadyToShare) {
+        _updateInitialViewportFromTransform(_transformationController.value);
+      }
     });
     _broadcastReadyState();
 
@@ -404,41 +403,13 @@ class _WifiSyncHomeState extends State<WifiSyncHome> {
     });
   }
 
-  void _broadcastImageMetadata() {
-    if (_imageBytes != null && _uiImage != null) {
-      try {
-        final base64Image = base64Encode(_imageBytes!);
-        final metadata = {
-          'type': 'image_shared',
-          'data': base64Image,
-          'sender': user.currentUser?.email ?? 'unknown',
-          'transform': _deviceSpecificTransform.storage.toList().toString(),
-        };
-
-        print('Enviando imagen a ${_connections.length} dispositivos');
-        for (var connection in _connections.values) {
-          connection.add(json.encode(metadata));
-          print('Imagen enviada a dispositivo');
-        }
-
-        setState(() {
-          _isSharing = true;
-          _isGestureSyncEnabled = true;
-          _hasImage = true;
-          _isFreeSliding =
-              false; // Habilitar modo de deslizamiento libre después de compartir
-        });
-      } catch (e) {
-        print('Error al compartir imagen: $e');
-      }
-    } else {
-      print('No hay imagen disponible para compartir');
-    }
-  }
-
   void _handleImageShared(
-      String base64Image, String sender, String? transformString) {
+      String base64Image, String sender, Map<String, dynamic>? leaderViewport) {
     try {
+      if (leaderViewport == null) {
+        log('Error: leaderViewport recibido es nulo: $leaderViewport');
+        return;
+      }
       final Uint8List imageBytes = base64Decode(base64Image);
       ui.decodeImageFromList(imageBytes, (ui.Image result) {
         setState(() {
@@ -449,18 +420,63 @@ class _WifiSyncHomeState extends State<WifiSyncHome> {
           _isGestureSyncEnabled = true;
         });
 
-        if (transformString != null) {
-          _applyReceivedTransform(transformString);
+        log(" $_isLeader, $_uiImage, $leaderViewport ");
+        // Posiciona el viewport basado en el Leader si somos Linked
+        if (!_isLeader! && _uiImage != null) {
+          _positionLinkedViewport(Rect.fromLTWH(
+            leaderViewport['left'],
+            leaderViewport['top'],
+            leaderViewport['width'],
+            leaderViewport['height'],
+          ));
         }
-
-        _calculateImagePortions();
-        _updateImageView();
 
         print('Imagen recibida y procesada correctamente');
       });
     } catch (e) {
       print('Error al procesar la imagen recibida: $e');
     }
+  }
+
+  void _positionLinkedViewport(Rect leaderViewport) {
+    // SOLO LO USA EL DISPOSITIVO LINKED
+    if (_uiImage == null) return;
+
+    final screenSize = MediaQuery.of(context).size;
+
+    final Rect linkedViewport = Rect.fromLTWH(
+      leaderViewport.right,
+      leaderViewport.top,
+      leaderViewport.width,
+      leaderViewport.height,
+    );
+
+    final double linkedScale = screenSize.width / leaderViewport.width;
+    log("Direction: $_direction ");
+    final Matrix4 linkedTransform = Matrix4.identity();
+    if (_direction == 'right') {
+      linkedTransform
+        ..scale(linkedScale)
+        ..translate(
+            -(leaderViewport.left - leaderViewport.width), -linkedViewport.top);
+    } else if (_direction == 'left') {
+      linkedTransform
+        ..scale(linkedScale)
+        ..translate(-linkedViewport.left, -linkedViewport.top);
+    } else if (_direction == 'up') {
+      linkedTransform
+        ..scale(linkedScale)
+        ..translate(-leaderViewport.left,
+            -(leaderViewport.top - leaderViewport.height));
+    } else if (_direction == 'down') {
+      linkedTransform
+        ..scale(linkedScale)
+        ..translate(-leaderViewport.left, -linkedViewport.bottom);
+    }
+
+    setState(() {
+      _transformationController.value = linkedTransform;
+    });
   }
 
   void _broadcastReadyState() {
@@ -497,7 +513,7 @@ class _WifiSyncHomeState extends State<WifiSyncHome> {
       }
 
       // Evitar imprimir los mensajes 'pong'
-      if (messageData['type'] != 'pong') {
+      if (messageData['type'] != 'pong' && messageData['type'] != 'ping') {
         print("Mensaje recibido de tipo: ${messageData['type']}");
       }
 
@@ -505,14 +521,6 @@ class _WifiSyncHomeState extends State<WifiSyncHome> {
         case 'screen_size':
           _handleScreenSizeInfo(
               connectionId, messageData['width'], messageData['height']);
-          break;
-        case 'image_metadata':
-          _handleReceivedImage(messageData['data'], messageData['sender'],
-              messageData['transform']);
-          break;
-        case 'image_portion':
-          _handleReceivedImagePortion(
-              messageData['deviceId'], messageData['portion']);
           break;
         case 'sync_gesture':
           if (_isGestureSyncEnabled && _isSharing) {
@@ -536,16 +544,13 @@ class _WifiSyncHomeState extends State<WifiSyncHome> {
           _handleSimultaneousSwipe(connectionId, messageData);
           break;
         case 'image_shared':
+          final leaderViewport = messageData['leaderViewport'];
           _handleImageShared(messageData['data'], messageData['sender'],
-              messageData['transform']);
+              leaderViewport // Enviar el leaderViewport como transformString
+              );
           break;
         case 'stop_sharing':
           _handleStopSharing();
-          break;
-        case 'image_request':
-          if (_hasImage && _isReadyToShare) {
-            _broadcastImageMetadata();
-          }
           break;
         case 'set_all_ready':
           _handleSetAllReady(messageData['isReady']);
@@ -563,6 +568,30 @@ class _WifiSyncHomeState extends State<WifiSyncHome> {
     } catch (e) {
       print('Error handling message: $e');
     }
+  }
+
+  Rect? _getLeaderViewport() {
+    if (_uiImage == null) return null;
+
+    final transform = _transformationController.value;
+    final scale = transform.getMaxScaleOnAxis();
+    final translation = transform.getTranslation();
+    final screenSize = MediaQuery.of(context).size;
+
+    // Calcular las dimensiones del viewport visible
+    double viewportWidth = screenSize.width / scale;
+    double viewportHeight = screenSize.height / scale;
+
+    // Calcular la posición del viewport
+    double viewportX = -translation.x / scale;
+    double viewportY = -translation.y / scale;
+
+    return Rect.fromLTWH(
+      viewportX,
+      viewportY,
+      viewportWidth,
+      viewportHeight,
+    );
   }
 
   void _forwardGestureToAllDevices(
@@ -714,6 +743,8 @@ class _WifiSyncHomeState extends State<WifiSyncHome> {
   void _initiateImageSharing() {
     if (_hasImage && _imageBytes != null && _uiImage != null) {
       print('Compartiendo imagen...');
+      // Calcular y asignar viewports antes de compartir la imagen
+      // _calculateAndAssignViewports();
       // Verificar si es el dispositivo que tiene la imagen original
       if (_isLeader! && _activeLinkedDeviceId != null) {
         _shareImageWithDevice(_activeLinkedDeviceId!);
@@ -741,11 +772,20 @@ class _WifiSyncHomeState extends State<WifiSyncHome> {
         final connection = _connections[deviceId];
         if (connection != null) {
           final base64Image = base64Encode(_imageBytes!);
+          final leaderViewport = _getLeaderViewport();
+          // log("LeaderViewport: $leaderViewport");
           final metadata = {
             'type': 'image_shared',
             'data': base64Image,
             'sender': user.currentUser?.email ?? 'unknown',
-            'transform': _deviceSpecificTransform.storage.toList().toString(),
+            'leaderViewport': leaderViewport != null
+                ? {
+                    'left': leaderViewport.left,
+                    'top': leaderViewport.top,
+                    'width': leaderViewport.width,
+                    'height': leaderViewport.height,
+                  }
+                : null,
           };
 
           print('Enviando imagen al dispositivo: $deviceId');
@@ -800,115 +840,6 @@ class _WifiSyncHomeState extends State<WifiSyncHome> {
     );
     connectedDevices.add(newDevice);
     myDevice ??= newDevice;
-    _calculateImagePortions();
-  }
-
-  void _calculateImagePortions() {
-    if (_uiImage == null || connectedDevices.isEmpty) return;
-
-    double totalWidth =
-        connectedDevices.fold(0.0, (sum, device) => sum + device.size.width);
-    double maxHeight =
-        connectedDevices.map((d) => d.size.height).reduce(math.max);
-
-    double scaleFactorWidth = _uiImage!.width / totalWidth;
-    double scaleFactorHeight = _uiImage!.height / maxHeight;
-    double scaleFactor = math.min(scaleFactorWidth, scaleFactorHeight);
-
-    double currentX = 0.0;
-    for (var device in connectedDevices) {
-      double portionWidth = device.size.width * scaleFactor;
-      double portionHeight = device.size.height * scaleFactor;
-
-      device.portion = Rect.fromLTWH(
-        currentX / _uiImage!.width,
-        0,
-        portionWidth / _uiImage!.width,
-        portionHeight / _uiImage!.height,
-      );
-
-      currentX += portionWidth;
-
-      if (device.id == myDevice?.id) {
-        setState(() {
-          myDevice = device;
-          _initialViewport = device.portion;
-          _setInitialTransform();
-        });
-      }
-    }
-
-    _broadcastImagePortions();
-    setState(() {});
-    _setInitialTransform();
-  }
-
-  void _setInitialTransform() {
-    if (_initialViewport != null && _uiImage != null) {
-      final viewportWidth = _initialViewport!.width * _uiImage!.width;
-      final viewportHeight = _initialViewport!.height * _uiImage!.height;
-      final scale = math.min(
-        MediaQuery.of(context).size.width / viewportWidth,
-        MediaQuery.of(context).size.height / viewportHeight,
-      );
-
-      _deviceSpecificTransform = Matrix4.identity()
-        ..translate(
-          -_initialViewport!.left * _uiImage!.width * scale,
-          -_initialViewport!.top * _uiImage!.height * scale,
-        )
-        ..scale(scale);
-
-      setState(() {});
-    }
-  }
-
-  void _broadcastImagePortions() {
-    for (var device in connectedDevices) {
-      final portionData = {
-        'type': 'image_portion',
-        'deviceId': device.id,
-        'portion': {
-          'left': device.portion.left,
-          'top': device.portion.top,
-          'width': device.portion.width,
-          'height': device.portion.height,
-        },
-      };
-      _connections[device.id]?.add(json.encode(portionData));
-    }
-  }
-
-  void _handleReceivedImage(
-      String base64Image, String sender, String? transformString) {
-    final Uint8List imageBytes = base64Decode(base64Image);
-    ui.decodeImageFromList(imageBytes, (ui.Image result) {
-      setState(() {
-        _uiImage = result;
-        _imageBytes = imageBytes;
-        _isSharing = false;
-        _hasImage = true;
-        _isReadyToShare = false;
-      });
-      if (transformString != null) {
-        _applyReceivedTransform(transformString);
-      }
-      _calculateImagePortions();
-      _updateImageView();
-    });
-  }
-
-  void _applyReceivedTransform(String transformString) {
-    try {
-      List<double> transformValues = transformString
-          .split(',')
-          .map((s) => double.parse(s.trim()))
-          .toList();
-      _deviceSpecificTransform = Matrix4.fromList(transformValues);
-    } catch (e) {
-      print('Error applying received transform: $e');
-      _deviceSpecificTransform = Matrix4.identity();
-    }
   }
 
   void _updateImageView() {
@@ -920,23 +851,6 @@ class _WifiSyncHomeState extends State<WifiSyncHome> {
     } else {
       print(
           "No se puede actualizar la vista de imagen: faltan datos necesarios");
-    }
-  }
-
-  void _handleReceivedImagePortion(
-      String deviceId, Map<String, dynamic> portionData) {
-    if (deviceId == myDevice?.id) {
-      setState(() {
-        myDevice?.portion = Rect.fromLTWH(
-          portionData['left'],
-          portionData['top'],
-          portionData['width'],
-          portionData['height'],
-        );
-      });
-      print(
-          "Porción de imagen actualizada para mi dispositivo: ${myDevice?.portion}");
-      _updateImageView();
     }
   }
 
@@ -956,6 +870,10 @@ class _WifiSyncHomeState extends State<WifiSyncHome> {
 
     print('Aplicando gesto recibido de ${gestureData['senderId']}');
     _applyTransformation(delta, scale, focalPoint);
+    // Si somos el Leader, recalcular y enviar el nuevo viewport al Linked
+    // if (_isLeader! && _activeLinkedDeviceId != null) {
+    //   _calculateAndAssignViewports();
+    // }
   }
 
   Future<void> _pickImage() async {
@@ -983,18 +901,10 @@ class _WifiSyncHomeState extends State<WifiSyncHome> {
           if (_connections.isEmpty) {
             _connections = currentConnections;
           }
+
+          // Inicializar el controlador de transformación si no existe
+          _transformationController = TransformationController();
         });
-
-        // Esperar a que el estado se actualice
-        await Future.delayed(const Duration(milliseconds: 200));
-
-        // Verificar y recalcular las porciones de imagen solo si hay dispositivos conectados
-        if (connectedDevices.isNotEmpty) {
-          _calculateImagePortions();
-        } else {
-          // Si no hay dispositivos conectados, reinicializar el dispositivo local
-          _initializeLocalDevice();
-        }
 
         _updateImageView();
         _broadcastReadyState();
@@ -1059,11 +969,6 @@ class _WifiSyncHomeState extends State<WifiSyncHome> {
 
       // Aplicar transformación local
       _applyTransformation(delta, scale, focalPoint);
-
-      // Actualizar el viewport si estamos en modo Match
-      if (_isReadyToShare) {
-        _updateInitialViewportFromTransform(_deviceSpecificTransform);
-      }
 
       // Broadcast del gesto
       _broadcastGesture(delta, scale, focalPoint);
@@ -1278,7 +1183,7 @@ class _WifiSyncHomeState extends State<WifiSyncHome> {
     );
   }
 
-  // HORIZONTAL
+  // PAN
   void _onPanDragStart(DragStartDetails details) {
     if (!_isReadyToShare || _isFreeSliding) return;
 
@@ -1317,17 +1222,17 @@ class _WifiSyncHomeState extends State<WifiSyncHome> {
     setState(() {
       _isSwipingLeft = dragDistanceX < -20;
       _isSwipingRight = dragDistanceX > 20;
-      _isSwipingDown = dragDistanceY < -20;
-      _isSwipingUp = dragDistanceY > 20;
+      _isSwipingDown = dragDistanceY < 20;
+      _isSwipingUp = dragDistanceY > -20;
       _lastSwipeTimestamps['local'] = DateTime.now();
     });
 
     if (_isSwipingLeft || _isSwipingRight) {
+      _direction = _isSwipingLeft ? 'left' : 'right';
       _broadcastSwipeGesture(_isSwipingLeft ? 'left' : 'right');
-      _checkSimultaneousSwipe();
     } else if (_isSwipingDown || _isSwipingUp) {
+      _direction = _isSwipingDown ? 'down' : 'up';
       _broadcastSwipeGesture(_isSwipingDown ? 'down' : 'up');
-      _checkSimultaneousSwipe();
     }
 
     // Resetear el temporizador de timeout
