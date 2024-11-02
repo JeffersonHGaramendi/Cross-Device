@@ -59,9 +59,9 @@ class WifiSyncApp extends StatelessWidget {
     return MaterialApp(
       debugShowCheckedModeBanner: false,
       title: "Cross-device",
-      theme: ThemeData(
-        primarySwatch: Colors.indigo,
-      ),
+      theme: ThemeData.light(),
+      darkTheme: ThemeData.light(),
+      themeMode: ThemeMode.light,
       home: LoginScreen(),
       //home: WifiSyncHome(),
     );
@@ -1109,10 +1109,19 @@ class _WifiSyncHomeState extends State<WifiSyncHome> {
 
     // Si es vinculado y no ha escaneado QR, mostrar scanner
     if (!_isLeader! && !_isQRCodeScanned) {
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        _scanQRCode();
-      });
-      return const Center(child: CircularProgressIndicator());
+      // WidgetsBinding.instance.addPostFrameCallback((_) {
+      //   _scanQRCode();
+      // });
+      // return Center(child: CircularProgressIndicator());
+      return QRViewExample(
+        onQRScanned: (String data) {
+          _connectToDevice(data);
+          setState(() {
+            _isQRCodeScanned = true;
+          });
+          Navigator.of(context).pop();
+        },
+      );
     }
 
     // Si es vinculado, ha escaneado QR pero no hay imagen
