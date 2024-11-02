@@ -42,7 +42,7 @@ class _QRViewExampleState extends State<QRViewExample> {
               height: overlaySize,
               decoration: BoxDecoration(
                 border: Border.all(
-                  color: Colors.green,
+                  color: Color(0xFF0067FF),
                   width: 4,
                 ),
                 borderRadius: BorderRadius.circular(borderRadius),
