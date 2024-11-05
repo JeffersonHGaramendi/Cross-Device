@@ -132,6 +132,11 @@ class _WifiSyncHomeState extends State<WifiSyncHome> {
 
   String? _direction;
 
+  double? leaderSlideY;
+  double? linkedSlideY;
+  double? leaderSlideX;
+  double? linkedSlideX;
+
   @override
   void initState() {
     super.initState();
@@ -404,7 +409,11 @@ class _WifiSyncHomeState extends State<WifiSyncHome> {
   }
 
   void _handleImageShared(
-      String base64Image, String sender, Map<String, dynamic>? leaderViewport) {
+      String base64Image,
+      String sender,
+      Map<String, dynamic>? leaderViewport,
+      double leaderSlideY,
+      double leaderSlideX) {
     try {
       if (leaderViewport == null) {
         log('Error: leaderViewport recibido es nulo: $leaderViewport');
@@ -423,12 +432,15 @@ class _WifiSyncHomeState extends State<WifiSyncHome> {
         log(" $_isLeader, $_uiImage, $leaderViewport ");
         // Posiciona el viewport basado en el Leader si somos Linked
         if (!_isLeader! && _uiImage != null) {
-          _positionLinkedViewport(Rect.fromLTWH(
-            leaderViewport['left'],
-            leaderViewport['top'],
-            leaderViewport['width'],
-            leaderViewport['height'],
-          ));
+          _positionLinkedViewport(
+              Rect.fromLTWH(
+                leaderViewport['left'],
+                leaderViewport['top'],
+                leaderViewport['width'],
+                leaderViewport['height'],
+              ),
+              leaderSlideY,
+              leaderSlideX);
         }
 
         print('Imagen recibida y procesada correctamente');
@@ -438,15 +450,28 @@ class _WifiSyncHomeState extends State<WifiSyncHome> {
     }
   }
 
-  void _positionLinkedViewport(Rect leaderViewport) {
+  void _positionLinkedViewport(
+      Rect leaderViewport, double leaderSlideY, double leaderSlideX) {
     // SOLO LO USA EL DISPOSITIVO LINKED
-    if (_uiImage == null) return;
+    if (_uiImage == null) {
+      log('Error: _uiImage, leaderSlideY o linkedSlideY es nulo');
+      return;
+    }
 
     final screenSize = MediaQuery.of(context).size;
 
+    // Calcula las diferencias de posición en X y Y
+    double yDifference = leaderSlideY - linkedSlideY!;
+    double xDifference = leaderSlideX - linkedSlideX!;
+
+    log("leaderSlideX: $leaderSlideX & leaderSlideY: $leaderSlideY ");
+    log("linkedSlideX: $linkedSlideX & linkedSlideY: $linkedSlideY ");
+    log("yDifference: $yDifference ");
+    log("xDifference: $xDifference ");
+
     final Rect linkedViewport = Rect.fromLTWH(
-      leaderViewport.right,
-      leaderViewport.top,
+      leaderViewport.right + xDifference,
+      leaderViewport.top + yDifference,
       leaderViewport.width,
       leaderViewport.height,
     );
@@ -545,9 +570,23 @@ class _WifiSyncHomeState extends State<WifiSyncHome> {
           break;
         case 'image_shared':
           final leaderViewport = messageData['leaderViewport'];
-          _handleImageShared(messageData['data'], messageData['sender'],
-              leaderViewport // Enviar el leaderViewport como transformString
-              );
+          final leaderSlideY =
+              messageData['leaderSlideY']; // Obtener leaderSlideY
+          final leaderSlideX =
+              messageData['leaderSlideX']; // Obtener leaderSlideX
+
+          if (leaderSlideY == null || leaderSlideX == null) {
+            log('Error: leaderSlideY es nulo');
+            return;
+          } else {
+            log('leaderSlideX: $leaderSlideX & leaderSlideY: $leaderSlideY');
+          }
+          _handleImageShared(
+              messageData['data'],
+              messageData['sender'],
+              leaderViewport, // Enviar el leaderViewport como transformString
+              leaderSlideY,
+              leaderSlideX);
           break;
         case 'stop_sharing':
           _handleStopSharing();
@@ -664,7 +703,6 @@ class _WifiSyncHomeState extends State<WifiSyncHome> {
     String remoteRole = messageData['role'];
     int timestamp = messageData['timestamp'];
 
-    print('Recibido estado de deslizamiento:');
     print('- Desde: $connectionId');
     print('- Rol: $remoteRole');
     print('- Estado: $isSwipping');
@@ -702,11 +740,8 @@ class _WifiSyncHomeState extends State<WifiSyncHome> {
     String localRole = _isLeader! ? 'leader' : 'linked';
     _roleSwipeStates[localRole] = _isLocalSwiping;
 
-    print('\nVerificando deslizamiento simultáneo:');
-    print('Estado de roles:');
     print('- Leader deslizando: ${_roleSwipeStates['leader']}');
     print('- Linked deslizando: ${_roleSwipeStates['linked']}');
-    print('- Rol local ($localRole) deslizando: $_isLocalSwiping');
 
     // Verificar que AMBOS roles estén deslizando
     bool bothRolesSwipping =
@@ -723,19 +758,11 @@ class _WifiSyncHomeState extends State<WifiSyncHome> {
           'Diferencia de tiempo entre swipes: ${timeDifference.inMilliseconds}ms');
     }
 
-    print('\nResultado de la verificación:');
-    print('- Ambos roles deslizando: $bothRolesSwipping');
-    print('- Deslizamientos simultáneos: $swipesAreSimultaneous');
-    print('- Listo para compartir: $_isReadyToShare');
-    print('- Todos dispositivos listos: $_allDevicesReady');
-    print('- Tiene imagen: $_hasImage');
-
     if (bothRolesSwipping &&
         swipesAreSimultaneous &&
         _isReadyToShare &&
         _allDevicesReady &&
         _hasImage) {
-      print('\n¡DESLIZAMIENTO SIMULTÁNEO DETECTADO! - Iniciando compartir');
       _initiateImageSharing();
     }
   }
@@ -743,8 +770,6 @@ class _WifiSyncHomeState extends State<WifiSyncHome> {
   void _initiateImageSharing() {
     if (_hasImage && _imageBytes != null && _uiImage != null) {
       print('Compartiendo imagen...');
-      // Calcular y asignar viewports antes de compartir la imagen
-      // _calculateAndAssignViewports();
       // Verificar si es el dispositivo que tiene la imagen original
       if (_isLeader! && _activeLinkedDeviceId != null) {
         _shareImageWithDevice(_activeLinkedDeviceId!);
@@ -786,16 +811,18 @@ class _WifiSyncHomeState extends State<WifiSyncHome> {
                     'height': leaderViewport.height,
                   }
                 : null,
+            'leaderSlideY': leaderSlideY,
+            'leaderSlideX': leaderSlideX
           };
 
-          print('Enviando imagen al dispositivo: $deviceId');
           connection.add(json.encode(metadata));
-          print('Imagen enviada al dispositivo');
 
           setState(() {
             _isSharing = true;
             _isGestureSyncEnabled = true;
             _hasImage = true;
+            _isReadyToShare = false;
+            _isFreeSliding = false;
           });
         } else {
           print('No se encontró la conexión para el dispositivo: $deviceId');
@@ -870,10 +897,6 @@ class _WifiSyncHomeState extends State<WifiSyncHome> {
 
     print('Aplicando gesto recibido de ${gestureData['senderId']}');
     _applyTransformation(delta, scale, focalPoint);
-    // Si somos el Leader, recalcular y enviar el nuevo viewport al Linked
-    // if (_isLeader! && _activeLinkedDeviceId != null) {
-    //   _calculateAndAssignViewports();
-    // }
   }
 
   Future<void> _pickImage() async {
@@ -1109,19 +1132,10 @@ class _WifiSyncHomeState extends State<WifiSyncHome> {
 
     // Si es vinculado y no ha escaneado QR, mostrar scanner
     if (!_isLeader! && !_isQRCodeScanned) {
-      // WidgetsBinding.instance.addPostFrameCallback((_) {
-      //   _scanQRCode();
-      // });
-      // return Center(child: CircularProgressIndicator());
-      return QRViewExample(
-        onQRScanned: (String data) {
-          _connectToDevice(data);
-          setState(() {
-            _isQRCodeScanned = true;
-          });
-          Navigator.of(context).pop();
-        },
-      );
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        _scanQRCode();
+      });
+      return Center(child: CircularProgressIndicator());
     }
 
     // Si es vinculado, ha escaneado QR pero no hay imagen
@@ -1197,13 +1211,19 @@ class _WifiSyncHomeState extends State<WifiSyncHome> {
     if (!_isReadyToShare || _isFreeSliding) return;
 
     String localRole = _isLeader! ? 'leader' : 'linked';
-    print('\nIniciando deslizamiento:');
-    print('- Rol: $localRole');
+
+    // Guardar el valor de Y de inicio del deslizamiento en el dispositivo Leader
+    if (_isLeader!) {
+      leaderSlideY = details.localPosition.dy;
+      leaderSlideX = details.localPosition.dx;
+    }
 
     setState(() {
       _startHorizontalDragX = details.localPosition.dx;
       _startVerticalDragY = details.localPosition.dy;
       _isLocalSwiping = true;
+      linkedSlideY = details.localPosition.dy; // Guardar Y inicial en Linked
+      linkedSlideX = details.localPosition.dx; // Guardar X inicial en Linked
       _isSwipeInProgress = true;
       _lastSwipeTimestamps['local'] = DateTime.now();
       _roleSwipeStates[localRole] = true;
@@ -1307,8 +1327,6 @@ class _WifiSyncHomeState extends State<WifiSyncHome> {
       'role': _isLeader! ? 'leader' : 'linked',
       'timestamp': DateTime.now().millisecondsSinceEpoch,
     };
-
-    print('Enviando estado de deslizamiento: $swipeData');
 
     for (var connection in _connections.values) {
       try {
