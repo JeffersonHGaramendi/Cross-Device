@@ -38,26 +38,74 @@ class _QrCodeViewState extends State<QrCodeView> {
 
   @override
   Widget build(BuildContext context) {
-    return Center(
-      child: _isLoading
-          ? CircularProgressIndicator()
-          : Container(
-              constraints: BoxConstraints(
-                maxWidth: 300,
-                maxHeight: 300,
-              ),
-              child: SizedBox(
-                width: 250,
-                height: 250,
-                child: QrImageView(
-                  data: json.encode({
-                    'ip': _localIp,
-                  }), // IP o los datos que ha mostrar en el QR
-                  version: QrVersions.auto,
-                  size: 250.0,
+    return Scaffold(
+      appBar: AppBar(
+        backgroundColor: Colors.white,
+      ),
+      backgroundColor: Colors.white,
+      body: SafeArea(
+        child: Center(
+          child: _isLoading
+              ? CircularProgressIndicator()
+              : Padding(
+                  padding: EdgeInsets.symmetric(horizontal: 24.0),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      SizedBox(
+                        height: 64,
+                      ),
+                      Container(
+                        padding: EdgeInsets.all(8),
+                        decoration: BoxDecoration(
+                          color: Color(0xFFDDEDFF), // Color de fondo
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                        child: Icon(Icons.share,
+                            color: Color(0xFF0067FF), size: 28),
+                      ),
+                      SizedBox(height: 16),
+                      Text(
+                        'Proyector,',
+                        style: TextStyle(
+                          fontSize: 24,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                      SizedBox(height: 8),
+                      Text(
+                        'Comparte este QR con los dispositivos que deseas vincular.',
+                        style: TextStyle(
+                          fontSize: 16,
+                          color: Color(0xFF939393),
+                        ),
+                        textAlign: TextAlign.left,
+                      ),
+                      SizedBox(height: 30),
+                      Center(
+                        child: Container(
+                          constraints: BoxConstraints(
+                            maxWidth: 300,
+                            maxHeight: 300,
+                          ),
+                          child: SizedBox(
+                            width: 250,
+                            height: 250,
+                            child: QrImageView(
+                              data: json.encode({
+                                'ip': _localIp,
+                              }),
+                              version: QrVersions.auto,
+                              size: 250.0,
+                            ),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
                 ),
-              ),
-            ),
+        ),
+      ),
     );
   }
 }
