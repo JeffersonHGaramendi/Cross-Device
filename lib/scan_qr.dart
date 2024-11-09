@@ -35,7 +35,7 @@ class _QRViewExampleState extends State<QRViewExample> {
               ),
             ),
           ),
-          // Marco verde visible sin superposición oscura
+          // Marco azul visible sin superposición oscura
           Center(
             child: Container(
               width: overlaySize,
@@ -49,21 +49,57 @@ class _QRViewExampleState extends State<QRViewExample> {
               ),
             ),
           ),
-          // Texto opcional para guiar al usuario
-          // Positioned(
-          //   bottom: 50,
-          //   left: 0,
-          //   right: 0,
-          //   child: Text(
-          //     'Posiciona el QR dentro del marco',
-          //     textAlign: TextAlign.center,
-          //     style: TextStyle(
-          //       color: Colors.white,
-          //       fontSize: 18,
-          //       fontWeight: FontWeight.bold,
-          //     ),
-          //   ),
-          // ),
+          // Container para el título y la descripción
+          Positioned(
+            top: 0,
+            left: 0,
+            right: 0,
+            child: Container(
+              padding: EdgeInsets.fromLTRB(20, 40, 20, 20),
+              decoration: BoxDecoration(
+                color: Colors.white,
+                // borderRadius: BorderRadius.only(
+                //   bottomLeft: Radius.circular(20),
+                //   bottomRight: Radius.circular(20),
+                // ),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  SizedBox(height: 40),
+                  // Icono circular azul
+                  Container(
+                    padding: EdgeInsets.all(8),
+                    decoration: BoxDecoration(
+                      color: Color(0xFFDDEDFF), // Color de fondo
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: Icon(
+                      Icons.remove_red_eye,
+                      color: Colors.blue,
+                      size: 24,
+                    ),
+                  ),
+                  SizedBox(height: 16),
+                  Text(
+                    'Visualizador,',
+                    style: TextStyle(
+                      fontSize: 24,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                  SizedBox(height: 8),
+                  Text(
+                    'Escanea el QR del room al que deseas ingresar.',
+                    style: TextStyle(
+                      fontSize: 16,
+                      color: Color(0xFF939393),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
         ],
       ),
     );
