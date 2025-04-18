@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import 'package:qr_code_scanner/qr_code_scanner.dart';
+import 'package:mobile_scanner/mobile_scanner.dart';
 
 class QRViewExample extends StatefulWidget {
   final Function(String) onQRScanned;
@@ -7,26 +7,35 @@ class QRViewExample extends StatefulWidget {
   QRViewExample({required this.onQRScanned});
 
   @override
-  State<StatefulWidget> createState() => _QRViewExampleState();
+  State<QRViewExample> createState() => _QRViewExampleState();
 }
 
 class _QRViewExampleState extends State<QRViewExample> {
-  QRViewController? controller;
-  final GlobalKey qrKey = GlobalKey(debugLabel: 'QR');
   final double overlaySize = 250;
   final double borderRadius = 10;
+  bool _hasScanned = false;
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       body: Stack(
         children: [
-          // QRView para escanear el código QR
-          QRView(
-            key: qrKey,
-            onQRViewCreated: _onQRViewCreated,
+          /// 📷 QR scanner con mobile_scanner
+          MobileScanner(
+            controller: MobileScannerController(),
+            onDetect: (BarcodeCapture capture) {
+              if (_hasScanned) return;
+              final barcode = capture.barcodes.first;
+              if (barcode.rawValue != null) {
+                setState(() {
+                  _hasScanned = true;
+                });
+                widget.onQRScanned(barcode.rawValue!);
+              }
+            },
           ),
-          // ClipPath para hacer la parte del QR transparente
+
+          /// 🎨 Superposición oscura con recorte
           Positioned.fill(
             child: CustomPaint(
               painter: QRScannerOverlayPainter(
@@ -35,7 +44,8 @@ class _QRViewExampleState extends State<QRViewExample> {
               ),
             ),
           ),
-          // Marco azul visible sin superposición oscura
+
+          /// 🟦 Marco azul claro en el centro
           Center(
             child: Container(
               width: overlaySize,
@@ -49,7 +59,8 @@ class _QRViewExampleState extends State<QRViewExample> {
               ),
             ),
           ),
-          // Container para el título y la descripción
+
+          /// 🧾 Encabezado e instrucciones
           Positioned(
             top: 0,
             left: 0,
@@ -58,20 +69,15 @@ class _QRViewExampleState extends State<QRViewExample> {
               padding: EdgeInsets.fromLTRB(20, 40, 20, 20),
               decoration: BoxDecoration(
                 color: Colors.white,
-                // borderRadius: BorderRadius.only(
-                //   bottomLeft: Radius.circular(20),
-                //   bottomRight: Radius.circular(20),
-                // ),
               ),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   SizedBox(height: 40),
-                  // Icono circular azul
                   Container(
                     padding: EdgeInsets.all(8),
                     decoration: BoxDecoration(
-                      color: Color(0xFFDDEDFF), // Color de fondo
+                      color: Color(0xFFDDEDFF),
                       borderRadius: BorderRadius.circular(8),
                     ),
                     child: Icon(
@@ -103,22 +109,6 @@ class _QRViewExampleState extends State<QRViewExample> {
         ],
       ),
     );
-  }
-
-  void _onQRViewCreated(QRViewController controller) {
-    this.controller = controller;
-    controller.scannedDataStream.listen((scanData) {
-      if (scanData.code != null) {
-        widget.onQRScanned(scanData.code!);
-        controller.dispose();
-      }
-    });
-  }
-
-  @override
-  void dispose() {
-    controller?.dispose();
-    super.dispose();
   }
 }
 

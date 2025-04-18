@@ -1,0 +1,2 @@
+C:/Users/WINDOWS 10/Desktop/Cross/Cross-Device/android/app/.cxx/Debug/w40571y6/x86/CMakeFiles/edit_cache.dir
+C:/Users/WINDOWS 10/Desktop/Cross/Cross-Device/android/app/.cxx/Debug/w40571y6/x86/CMakeFiles/rebuild_cache.dir
