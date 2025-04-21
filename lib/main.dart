@@ -138,6 +138,8 @@ class WifiSyncHomeState extends State<WifiSyncHome> {
   double? leaderSlideX;
   double? linkedSlideX;
 
+  String? _qrScanError;
+
   @override
   void initState() {
     super.initState();
@@ -1250,13 +1252,52 @@ class WifiSyncHomeState extends State<WifiSyncHome> {
 
     // Si es vinculado y no ha escaneado QR, mostrar scanner
     if (!_isLeader! && !_isQRCodeScanned) {
-      return QRViewExample(
-        onQRScanned: (String data) {
-          _connectToDevice(data);
-          setState(() {
-            _isQRCodeScanned = true;
-          });
-        },
+      return Stack(
+        children: [
+          ShowQRView(
+            onQRScanned: (String data) {
+              _connectToDevice(data);
+              setState(() {
+                _isQRCodeScanned = true;
+                _qrScanError = null; // Limpiar error si estaba
+              });
+            },
+            onQRInvalid: (String errorMsg) {
+              setState(() {
+                _qrScanError = errorMsg;
+                _isQRCodeScanned = false;
+              });
+
+              // Oculta el error luego de 3 segundos
+              Future.delayed(Duration(seconds: 4), () {
+                if (mounted) {
+                  setState(() {
+                    _qrScanError = null;
+                  });
+                }
+              });
+            },
+          ),
+
+          if (_qrScanError != null)
+            Positioned(
+              bottom: 40,
+              left: 20,
+              right: 20,
+              child: Container(
+                padding: EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                decoration: BoxDecoration(
+                  color: Colors.redAccent,
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: Text(
+                  _qrScanError!,
+                  style: TextStyle(color: Colors.white, fontSize: 16),
+                  textAlign: TextAlign.center,
+                ),
+              ),
+            ),
+        ],
       );
     }
 

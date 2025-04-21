@@ -1,16 +1,21 @@
 import 'package:flutter/material.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
+import 'package:network_info_plus/network_info_plus.dart';
 
-class QRViewExample extends StatefulWidget {
+class ShowQRView extends StatefulWidget {
   final Function(String) onQRScanned;
+  final Function(String)? onQRInvalid;
 
-  QRViewExample({required this.onQRScanned});
+  const ShowQRView({
+    required this.onQRScanned,
+    this.onQRInvalid,
+  });
 
   @override
-  State<QRViewExample> createState() => _QRViewExampleState();
+  State<ShowQRView> createState() => _ShowQRViewState();
 }
 
-class _QRViewExampleState extends State<QRViewExample> {
+class _ShowQRViewState extends State<ShowQRView> {
   final double overlaySize = 250;
   final double borderRadius = 10;
   bool _hasScanned = false;
@@ -20,22 +25,36 @@ class _QRViewExampleState extends State<QRViewExample> {
     return Scaffold(
       body: Stack(
         children: [
-          /// 📷 QR scanner con mobile_scanner
+          /// QR scanner con mobile_scanner
           MobileScanner(
             controller: MobileScannerController(),
-            onDetect: (BarcodeCapture capture) {
+            onDetect: (BarcodeCapture capture) async {
               if (_hasScanned) return;
-              final barcode = capture.barcodes.first;
-              if (barcode.rawValue != null) {
-                setState(() {
-                  _hasScanned = true;
-                });
-                widget.onQRScanned(barcode.rawValue!);
+
+              final qr = capture.barcodes.first.rawValue;
+              if (qr == null) return;
+
+              final uri = Uri.tryParse(qr);
+              final myIp = await _getLocalIpAddress();
+
+              if (uri == null ||
+                  uri.scheme != 'room' ||
+                  uri.host.isEmpty ||
+                  myIp == null ||
+                  !_isSameSubnet(myIp, uri.host)) {
+                widget.onQRInvalid?.call("El código escaneado no es válido o no estás en la misma red Wi-Fi.");
+                return;
               }
+
+              setState(() {
+                _hasScanned = true;
+              });
+
+              widget.onQRScanned(qr);
             },
           ),
 
-          /// 🎨 Superposición oscura con recorte
+          /// Superposición oscura con recorte
           Positioned.fill(
             child: CustomPaint(
               painter: QRScannerOverlayPainter(
@@ -45,7 +64,7 @@ class _QRViewExampleState extends State<QRViewExample> {
             ),
           ),
 
-          /// 🟦 Marco azul claro en el centro
+          /// Marco azul claro en el centro
           Center(
             child: Container(
               width: overlaySize,
@@ -60,7 +79,7 @@ class _QRViewExampleState extends State<QRViewExample> {
             ),
           ),
 
-          /// 🧾 Encabezado e instrucciones
+          /// Encabezado e instrucciones
           Positioned(
             top: 0,
             left: 0,
@@ -110,7 +129,19 @@ class _QRViewExampleState extends State<QRViewExample> {
       ),
     );
   }
+
+  Future<String?> _getLocalIpAddress() async {
+    final info = NetworkInfo();
+    return await info.getWifiIP();
+  }
+
+  bool _isSameSubnet(String ip1, String ip2) {
+    final a = ip1.split('.').take(3).join('.');
+    final b = ip2.split('.').take(3).join('.');
+    return a == b;
+  }
 }
+
 
 // Painter personalizado para crear la superposición con un área transparente
 class QRScannerOverlayPainter extends CustomPainter {
