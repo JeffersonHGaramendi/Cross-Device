@@ -34,15 +34,25 @@ class _ShowQRViewState extends State<ShowQRView> {
               final qr = capture.barcodes.first.rawValue;
               if (qr == null) return;
 
+              print('QR detectado: $qr');
+
               final uri = Uri.tryParse(qr);
               final myIp = await _getLocalIpAddress();
 
               if (uri == null ||
                   uri.scheme != 'room' ||
                   uri.host.isEmpty ||
-                  myIp == null ||
-                  !_isSameSubnet(myIp, uri.host)) {
-                widget.onQRInvalid?.call("El código escaneado no es válido o no estás en la misma red Wi-Fi.");
+                  myIp == null) {
+                print('❌ Error: QR inválido');
+                widget.onQRInvalid
+                    ?.call("Código no válido o no estás en la misma red.");
+                return;
+              }
+
+              print('✅ Conectando a: ${uri.host} desde $myIp');
+
+              if (!_isSameSubnet(myIp, uri.host)) {
+                widget.onQRInvalid?.call("No estás en la misma red Wi-Fi.");
                 return;
               }
 
@@ -138,10 +148,10 @@ class _ShowQRViewState extends State<ShowQRView> {
   bool _isSameSubnet(String ip1, String ip2) {
     final a = ip1.split('.').take(3).join('.');
     final b = ip2.split('.').take(3).join('.');
+    print('Subred comparada: $a vs $b');
     return a == b;
   }
 }
-
 
 // Painter personalizado para crear la superposición con un área transparente
 class QRScannerOverlayPainter extends CustomPainter {

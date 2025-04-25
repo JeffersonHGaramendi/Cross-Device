@@ -92,9 +92,7 @@ class _QrCodeViewState extends State<QrCodeView> {
                             width: 250,
                             height: 250,
                             child: QrImageView(
-                              data: json.encode({
-                                'ip': _localIp,
-                              }),
+                              data: 'room://$_localIp',
                               version: QrVersions.auto,
                               size: 250.0,
                             ),

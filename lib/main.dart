@@ -290,18 +290,23 @@ class WifiSyncHomeState extends State<WifiSyncHome> {
   }
 
   void _connectToDevice(String data) async {
-    Map<String, dynamic> connectionInfo = json.decode(data);
-    String ip = connectionInfo['ip'];
+    final uri = Uri.tryParse(data);
+
+    if (uri == null || uri.scheme != 'room' || uri.host.isEmpty) return;
+
+    final ip = uri.host;
     _addDebugInfo('Attempting to connect to: $ip');
+
     try {
       WebSocket webSocket = await WebSocket.connect('ws://$ip:8080');
       String connectionId = DateTime.now().millisecondsSinceEpoch.toString();
       _connections[connectionId] = webSocket;
       _addDebugInfo('Connected to: $ip');
+
       setState(() {});
+
       webSocket.listen(
         (message) {
-          // _addDebugInfo('Received message: $message');
           _handleIncomingMessage(message, connectionId);
         },
         onError: (error) => _addDebugInfo('WebSocket error: $error'),
@@ -1208,35 +1213,73 @@ class WifiSyncHomeState extends State<WifiSyncHome> {
                   ],
                 ),
               ),
-              floatingActionButton: _isLeader!
+              floatingActionButton: (_isLeader! ||
+                      (!_isLeader! && _isQRCodeScanned))
                   ? SpeedDial(
                       backgroundColor: Color(0xFF0067FF),
                       foregroundColor: Colors.white,
                       shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(16)),
+                        borderRadius: BorderRadius.circular(16),
+                      ),
                       animatedIcon: AnimatedIcons.menu_close,
                       overlayColor: Colors.black,
                       overlayOpacity: 0.5,
                       children: [
-                        if (_hasImage)
+                        if (_isLeader!) ...[
+                          if (_hasImage)
+                            SpeedDialChild(
+                              child: Icon(_isReadyToShare
+                                  ? Icons.share
+                                  : Icons.share_outlined),
+                              label: 'Match',
+                              onTap: () => _toggleReadyToShare(),
+                            ),
+                          if (_hasImage)
+                            SpeedDialChild(
+                              child: Icon(Icons.qr_code),
+                              label: 'View QR',
+                              onTap: () => _showQRCodeDialog(),
+                            ),
                           SpeedDialChild(
-                            child: Icon(_isReadyToShare
-                                ? Icons.share
-                                : Icons.share_outlined),
-                            label: 'Match',
-                            onTap: () => _toggleReadyToShare(),
+                            child: Icon(Icons.add_photo_alternate),
+                            label: 'Add image',
+                            onTap: () => _pickImage(),
                           ),
-                        if (_hasImage)
+                        ] else ...[
                           SpeedDialChild(
-                            child: Icon(Icons.qr_code),
-                            label: 'View QR',
-                            onTap: () => _showQRCodeDialog(),
+                            child: Icon(Icons.logout),
+                            label: 'Desconectar',
+                            onTap: () {
+                              // Cierra conexiones
+                              _connections.forEach((id, socket) {
+                                try {
+                                  socket.close();
+                                } catch (e) {
+                                  print('Error al cerrar conexión con $id: $e');
+                                }
+                              });
+
+                              _connections.clear();
+                              _connectedDevicesReadyState.clear();
+
+                              // Espera un frame antes de actualizar el UI
+                              Future.delayed(Duration(milliseconds: 100), () {
+                                if (mounted) {
+                                  setState(() {
+                                    _isQRCodeScanned = false;
+                                  });
+                                }
+                              });
+
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                SnackBar(
+                                  content: Text("Desconectado del room"),
+                                  duration: Duration(seconds: 2),
+                                ),
+                              );
+                            },
                           ),
-                        SpeedDialChild(
-                          child: Icon(Icons.add_photo_alternate),
-                          label: 'Add image',
-                          onTap: () => _pickImage(),
-                        ),
+                        ],
                       ],
                     )
                   : null,
@@ -1268,7 +1311,7 @@ class WifiSyncHomeState extends State<WifiSyncHome> {
                 _isQRCodeScanned = false;
               });
 
-              // Oculta el error luego de 3 segundos
+              // Oculta el error luego de 4 segundos
               Future.delayed(Duration(seconds: 4), () {
                 if (mounted) {
                   setState(() {
@@ -1278,7 +1321,6 @@ class WifiSyncHomeState extends State<WifiSyncHome> {
               });
             },
           ),
-
           if (_qrScanError != null)
             Positioned(
               bottom: 40,
@@ -1602,10 +1644,13 @@ class WifiSyncHomeState extends State<WifiSyncHome> {
           shape: RoundedRectangleBorder(
             borderRadius: BorderRadius.circular(10),
           ),
-          child: SizedBox(
-            width: 300,
-            height: 300,
-            child: QrCodeViewHasImage(),
+          child: ClipRRect(
+            borderRadius: BorderRadius.circular(10),
+            child: SizedBox(
+              width: 300,
+              height: 300,
+              child: QrCodeViewHasImage(),
+            ),
           ),
         );
       },
@@ -1649,7 +1694,7 @@ class ImagePainter extends CustomPainter {
 
     if (showHighlight && currentTransform != null) {
       final highlightPaint = Paint()
-        ..color = Colors.yellow.withOpacity(0.3)
+        ..color = Color(0xFFFFA91F).withOpacity(0.5)
         ..style = PaintingStyle.fill;
 
       // Calcular el viewport visible
