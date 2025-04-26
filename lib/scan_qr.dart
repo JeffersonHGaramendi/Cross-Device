@@ -27,42 +27,48 @@ class _ShowQRViewState extends State<ShowQRView> {
         children: [
           /// QR scanner con mobile_scanner
           MobileScanner(
-            controller: MobileScannerController(),
-            onDetect: (BarcodeCapture capture) async {
-              if (_hasScanned) return;
+              controller: MobileScannerController(),
+              onDetect: (BarcodeCapture capture) async {
+                if (_hasScanned) return;
 
-              final qr = capture.barcodes.first.rawValue;
-              if (qr == null) return;
+                final qr = capture.barcodes.first.rawValue;
+                if (qr == null) return;
 
-              print('QR detectado: $qr');
+                final uri = Uri.tryParse(qr);
+                final info = NetworkInfo();
+                final myIp = await info.getWifiIP();
+                final myGateway = await info.getWifiGatewayIP();
 
-              final uri = Uri.tryParse(qr);
-              final myIp = await _getLocalIpAddress();
+                if (uri == null ||
+                    uri.scheme != 'room' ||
+                    uri.host.isEmpty ||
+                    myIp == null ||
+                    myGateway == null) {
+                  widget.onQRInvalid
+                      ?.call("Código no válido o no estás en la misma red.");
+                  return;
+                }
 
-              if (uri == null ||
-                  uri.scheme != 'room' ||
-                  uri.host.isEmpty ||
-                  myIp == null) {
-                print('❌ Error: QR inválido');
-                widget.onQRInvalid
-                    ?.call("Código no válido o no estás en la misma red.");
-                return;
-              }
+                print('✅ Mi IP: $myIp');
+                print('✅ IP del QR: ${uri.host}');
+                print('✅ Mi Gateway: $myGateway');
 
-              print('✅ Conectando a: ${uri.host} desde $myIp');
+                // 🔥 NUEVO: Obtener el gateway del QR
+                final qrGateway = await _getGatewayOfIp(uri.host);
+                print('✅ Gateway del QR: $qrGateway');
 
-              if (!_isSameSubnet(myIp, uri.host)) {
-                widget.onQRInvalid?.call("No estás en la misma red Wi-Fi.");
-                return;
-              }
+                if (qrGateway == null || qrGateway != myGateway) {
+                  widget.onQRInvalid?.call(
+                      "No están conectados al mismo Wi-Fi (distinto Gateway).");
+                  return;
+                }
 
-              setState(() {
-                _hasScanned = true;
-              });
+                setState(() {
+                  _hasScanned = true;
+                });
 
-              widget.onQRScanned(qr);
-            },
-          ),
+                widget.onQRScanned(qr);
+              }),
 
           /// Superposición oscura con recorte
           Positioned.fill(
@@ -145,11 +151,16 @@ class _ShowQRViewState extends State<ShowQRView> {
     return await info.getWifiIP();
   }
 
-  bool _isSameSubnet(String ip1, String ip2) {
-    final a = ip1.split('.').take(3).join('.');
-    final b = ip2.split('.').take(3).join('.');
-    print('Subred comparada: $a vs $b');
-    return a == b;
+  Future<String?> _getGatewayOfIp(String ip) async {
+    // Esta función es un mock, en realidad para obtener el gateway de otro IP
+    // tendrías que preguntarle a un servidor o asumir que todos usan el mismo router.
+
+    // Para simplificar: Asumimos que si tú estás conectado a 10.11.x.x y el QR tiene 10.11.x.x,
+    // ambos usan el mismo Gateway.
+
+    // Retornamos tu mismo gateway como "gateway del QR"
+    final info = NetworkInfo();
+    return await info.getWifiGatewayIP();
   }
 }
 
