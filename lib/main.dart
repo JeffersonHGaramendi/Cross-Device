@@ -1,37 +1,7 @@
-// import 'package:crossdevice/firebase_options.dart';
-// import 'home_screen.dart';
-// import 'package:firebase_core/firebase_core.dart';
-// import 'package:flutter/material.dart';
-
-// void main() async {
-//   WidgetsFlutterBinding.ensureInitialized();
-//   await Firebase.initializeApp(
-//     options: DefaultFirebaseOptions.currentPlatform,
-//   );
-//   runApp(MyApp());
-// }
-
-// class MyApp extends StatelessWidget {
-//   const MyApp({super.key});
-
-//   @override
-//   Widget build(BuildContext context) {
-//     return MaterialApp(
-//       debugShowCheckedModeBanner: false,
-//       title: "Cross-device",
-//       theme: ThemeData(
-//         primarySwatch: Colors.indigo,
-//       ),
-//       home: HomeScreen(),
-//     );
-//   }
-// }
-
 import 'dart:async';
 import 'dart:developer';
 import 'dart:typed_data';
 import 'dart:ui' as ui;
-// import 'dart:math' as math;
 
 import 'package:crossdevice/auth/login_screen.dart';
 import 'package:crossdevice/chooserole_screen.dart';
@@ -168,9 +138,7 @@ class WifiSyncHomeState extends State<WifiSyncHome> {
   void _sendPingToAllClients() {
     final pingMessage = json.encode({
       'type': 'ping',
-      'timestamp': DateTime
-          .now()
-          .millisecondsSinceEpoch,
+      'timestamp': DateTime.now().millisecondsSinceEpoch,
     });
 
     _connections.forEach((id, connection) {
@@ -186,9 +154,7 @@ class WifiSyncHomeState extends State<WifiSyncHome> {
   void _checkConnectionTimeouts() {
     final now = DateTime.now();
     _lastPongTimes.forEach((id, lastPong) {
-      if (now
-          .difference(lastPong)
-          .inSeconds > 15) {
+      if (now.difference(lastPong).inSeconds > 15) {
         // 15 seconds timeout
         print('Connection timeout for client $id');
         _handleDisconnection(id);
@@ -197,12 +163,8 @@ class WifiSyncHomeState extends State<WifiSyncHome> {
   }
 
   void _initializeLocalDevice() async {
-    final size = MediaQuery
-        .of(context)
-        .size;
-    String deviceId = 'local_${DateTime
-        .now()
-        .millisecondsSinceEpoch}';
+    final size = MediaQuery.of(context).size;
+    String deviceId = 'local_${DateTime.now().millisecondsSinceEpoch}';
     DeviceInfo localDevice = DeviceInfo(
       id: deviceId,
       portion: Rect.zero,
@@ -227,10 +189,7 @@ class WifiSyncHomeState extends State<WifiSyncHome> {
 
   // Asegúrate de que esta función esté actualizada para manejar los nuevos tipos de mensajes
   void _handleConnection(WebSocket webSocket) {
-    String connectionId = DateTime
-        .now()
-        .millisecondsSinceEpoch
-        .toString();
+    String connectionId = DateTime.now().millisecondsSinceEpoch.toString();
 
     // Configurar el WebSocket para no cerrarse por inactividad
     webSocket.pingInterval = const Duration(seconds: 5);
@@ -243,8 +202,7 @@ class WifiSyncHomeState extends State<WifiSyncHome> {
 
     _addDebugInfo('Client connected: $connectionId');
     print(
-        'Nuevo dispositivo conectado. Total dispositivos: ${_connections
-            .length}');
+        'Nuevo dispositivo conectado. Total dispositivos: ${_connections.length}');
 
     setState(() {
       _connectedDevicesReadyState[connectionId] = false;
@@ -254,7 +212,7 @@ class WifiSyncHomeState extends State<WifiSyncHome> {
     _broadcastReadyState();
 
     webSocket.listen(
-          (message) {
+      (message) {
         _lastPongTimes[connectionId] = DateTime.now();
         _connectionStates[connectionId]?.lastActivity = DateTime.now();
 
@@ -299,8 +257,7 @@ class WifiSyncHomeState extends State<WifiSyncHome> {
     _checkAllDevicesReady();
 
     print(
-        'Dispositivo desconectado. Dispositivos restantes: ${_connections
-            .length}');
+        'Dispositivo desconectado. Dispositivos restantes: ${_connections.length}');
   }
 
   void _connectToDevice(String data) async {
@@ -313,17 +270,14 @@ class WifiSyncHomeState extends State<WifiSyncHome> {
 
     try {
       WebSocket webSocket = await WebSocket.connect('ws://$ip:8080');
-      String connectionId = DateTime
-          .now()
-          .millisecondsSinceEpoch
-          .toString();
+      String connectionId = DateTime.now().millisecondsSinceEpoch.toString();
       _connections[connectionId] = webSocket;
       _addDebugInfo('Connected to: $ip');
 
       setState(() {});
 
       webSocket.listen(
-            (message) {
+        (message) {
           _handleIncomingMessage(message, connectionId);
         },
         onError: (error) => _addDebugInfo('WebSocket error: $error'),
@@ -362,9 +316,7 @@ class WifiSyncHomeState extends State<WifiSyncHome> {
   void _updateInitialViewportFromTransform(Matrix4 transform) {
     if (_uiImage == null) return;
 
-    final Size screenSize = MediaQuery
-        .of(context)
-        .size;
+    final Size screenSize = MediaQuery.of(context).size;
     final double scale = transform.getMaxScaleOnAxis();
     final Vector3 translation = transform.getTranslation();
 
@@ -406,7 +358,7 @@ class WifiSyncHomeState extends State<WifiSyncHome> {
       _connectedDevicesReadyState.updateAll((key, value) => false);
       _isFreeSliding = true;
       _isGestureSyncEnabled =
-      true; // Mantener la sincronización de gestos activa
+          true; // Mantener la sincronización de gestos activa
     });
   }
 
@@ -429,13 +381,14 @@ class WifiSyncHomeState extends State<WifiSyncHome> {
 
   void _checkAllDevicesReady() {
     bool allReady =
-    _connectedDevicesReadyState.values.every((isReady) => isReady);
+        _connectedDevicesReadyState.values.every((isReady) => isReady);
     setState(() {
       _allDevicesReady = allReady && _isReadyToShare;
     });
   }
 
-  void _handleImageShared(String base64Image,
+  void _handleImageShared(
+      String base64Image,
       String sender,
       Map<String, dynamic>? leaderViewport,
       double leaderSlideY,
@@ -476,17 +429,15 @@ class WifiSyncHomeState extends State<WifiSyncHome> {
     }
   }
 
-  void _positionLinkedViewport(Rect leaderViewport, double leaderSlideY,
-      double leaderSlideX) {
+  void _positionLinkedViewport(
+      Rect leaderViewport, double leaderSlideY, double leaderSlideX) {
     // SOLO LO USA EL DISPOSITIVO LINKED
     if (_uiImage == null) {
       log('Error: _uiImage, leaderSlideY o linkedSlideY es nulo');
       return;
     }
 
-    final screenSize = MediaQuery
-        .of(context)
-        .size;
+    final screenSize = MediaQuery.of(context).size;
 
     // Calcula las diferencias de posición en X y Y
     double yDifference = leaderSlideY - linkedSlideY!;
@@ -551,9 +502,7 @@ class WifiSyncHomeState extends State<WifiSyncHome> {
     final metadata = {
       'type': 'linked_positioned',
       'sender': user.currentUser?.email ?? 'unknown',
-      'timestamp': DateTime
-          .now()
-          .millisecondsSinceEpoch,
+      'timestamp': DateTime.now().millisecondsSinceEpoch,
     };
 
     // Notify all connected devices
@@ -642,9 +591,9 @@ class WifiSyncHomeState extends State<WifiSyncHome> {
         case 'image_shared':
           final leaderViewport = messageData['leaderViewport'];
           final leaderSlideY =
-          messageData['leaderSlideY']; // Obtener leaderSlideY
+              messageData['leaderSlideY']; // Obtener leaderSlideY
           final leaderSlideX =
-          messageData['leaderSlideX']; // Obtener leaderSlideX
+              messageData['leaderSlideX']; // Obtener leaderSlideX
 
           if (leaderSlideY == null || leaderSlideX == null) {
             log('Error: leaderSlideY es nulo');
@@ -709,9 +658,7 @@ class WifiSyncHomeState extends State<WifiSyncHome> {
     final transform = _transformationController.value;
     final scale = transform.getMaxScaleOnAxis();
     final translation = transform.getTranslation();
-    final screenSize = MediaQuery
-        .of(context)
-        .size;
+    final screenSize = MediaQuery.of(context).size;
 
     // Calcular las dimensiones del viewport visible
     double viewportWidth = screenSize.width / scale;
@@ -729,17 +676,15 @@ class WifiSyncHomeState extends State<WifiSyncHome> {
     );
   }
 
-  void _forwardGestureToAllDevices(Map<String, dynamic> gestureData,
-      String originalSenderId) {
+  void _forwardGestureToAllDevices(
+      Map<String, dynamic> gestureData, String originalSenderId) {
     if (!_isLeader! || !_isSharing) return;
 
     final forwardedData = {
       ...gestureData,
       'forwarded': true,
       'originalSenderId': originalSenderId,
-      'timestamp': DateTime
-          .now()
-          .millisecondsSinceEpoch,
+      'timestamp': DateTime.now().millisecondsSinceEpoch,
     };
 
     print(
@@ -764,7 +709,7 @@ class WifiSyncHomeState extends State<WifiSyncHome> {
       _isFreeSliding = !isReady;
       _connectedDevicesReadyState.updateAll((key, value) => isReady);
       _isGestureSyncEnabled =
-      true; // Mantener la sincronización de gestos activa
+          true; // Mantener la sincronización de gestos activa
     });
     _checkAllDevicesReady();
 
@@ -795,8 +740,8 @@ class WifiSyncHomeState extends State<WifiSyncHome> {
     }
   }
 
-  void _handleSimultaneousSwipe(String connectionId,
-      Map<String, dynamic> messageData) {
+  void _handleSimultaneousSwipe(
+      String connectionId, Map<String, dynamic> messageData) {
     bool isSwipping = messageData['isSwipping'];
     String remoteRole = messageData['role'];
     int timestamp = messageData['timestamp'];
@@ -853,16 +798,16 @@ class WifiSyncHomeState extends State<WifiSyncHome> {
       swipesAreSimultaneous = timeDifference.inMilliseconds < 500;
 
       print(
-          'Diferencia de tiempo entre swipes: ${timeDifference
-              .inMilliseconds}ms');
+          'Diferencia de tiempo entre swipes: ${timeDifference.inMilliseconds}ms');
     }
 
     if (bothRolesSwipping &&
         swipesAreSimultaneous &&
         _isReadyToShare &&
-        _allDevicesReady &&
-        _hasImage) {
-      _initiateImageSharing();
+        _allDevicesReady) {
+      if (_isLeader! && _hasImage) {
+        _initiateImageSharing();
+      }
     }
   }
 
@@ -905,9 +850,7 @@ class WifiSyncHomeState extends State<WifiSyncHome> {
       'type': 'sharing_state_update',
       'isReadyToShare': false,
       'isFreeSliding': true,
-      'timestamp': DateTime
-          .now()
-          .millisecondsSinceEpoch,
+      'timestamp': DateTime.now().millisecondsSinceEpoch,
     };
 
     _connections.forEach((deviceId, connection) {
@@ -935,11 +878,11 @@ class WifiSyncHomeState extends State<WifiSyncHome> {
             'sender': user.currentUser?.email ?? 'unknown',
             'leaderViewport': leaderViewport != null
                 ? {
-              'left': leaderViewport.left,
-              'top': leaderViewport.top,
-              'width': leaderViewport.width,
-              'height': leaderViewport.height,
-            }
+                    'left': leaderViewport.left,
+                    'top': leaderViewport.top,
+                    'width': leaderViewport.width,
+                    'height': leaderViewport.height,
+                  }
                 : null,
             'leaderSlideY': leaderSlideY,
             'leaderSlideX': leaderSlideX
@@ -976,9 +919,7 @@ class WifiSyncHomeState extends State<WifiSyncHome> {
   }
 
   void _sendScreenSize(String connectionId) {
-    final size = MediaQuery
-        .of(context)
-        .size;
+    final size = MediaQuery.of(context).size;
     final screenSizeData = {
       'type': 'screen_size',
       'width': size.width,
@@ -1031,7 +972,7 @@ class WifiSyncHomeState extends State<WifiSyncHome> {
     try {
       final ImagePicker picker = ImagePicker();
       final XFile? pickedFile =
-      await picker.pickImage(source: ImageSource.gallery);
+          await picker.pickImage(source: ImageSource.gallery);
 
       if (pickedFile != null) {
         // Mantener una referencia a las conexiones actuales
@@ -1103,9 +1044,7 @@ class WifiSyncHomeState extends State<WifiSyncHome> {
         // Enviar un ping para verificar la conexión
         connection.add(json.encode({
           'type': 'ping',
-          'timestamp': DateTime
-              .now()
-              .millisecondsSinceEpoch,
+          'timestamp': DateTime.now().millisecondsSinceEpoch,
         }));
       } catch (e) {
         print('Conexión perdida con dispositivo $id: $e');
@@ -1139,9 +1078,7 @@ class WifiSyncHomeState extends State<WifiSyncHome> {
       'focalPointX': focalPoint.dx,
       'focalPointY': focalPoint.dy,
       'senderId': user.currentUser?.email,
-      'timestamp': DateTime
-          .now()
-          .millisecondsSinceEpoch,
+      'timestamp': DateTime.now().millisecondsSinceEpoch,
     };
 
     // Si somos un dispositivo Linked, enviamos solo al Leader
@@ -1209,117 +1146,116 @@ class WifiSyncHomeState extends State<WifiSyncHome> {
       debugShowCheckedModeBanner: false,
       home: _isLeader == null
           ? ChooseroleScreen(
-        isLeader:
-        _onRoleSelected, // Pasamos la función para recibir la elección
-      )
+              isLeader:
+                  _onRoleSelected, // Pasamos la función para recibir la elección
+            )
           : Scaffold(
-        backgroundColor: Colors.white,
-        body: SafeArea(
-          child: Stack(
-            children: [
-              Center(child: _buildImageView()),
-              // Solo mostramos el botón de retroceso sin AppBar
-              Positioned(
-                top: 35,
-                left: 20,
-                child: Container(
-                  height: 32,
-                  width: 32,
-                  decoration: BoxDecoration(
-                    color: Colors.white,
-                    shape: BoxShape.circle,
-                  ),
-                  child: Center(
-                    child: IconButton(
-                      padding: EdgeInsets.zero,
-                      constraints: BoxConstraints(),
-                      icon: Icon(
-                        Icons.arrow_back,
+              backgroundColor: Colors.white,
+              body: SafeArea(
+                child: Stack(
+                  children: [
+                    Center(child: _buildImageView()),
+                    // Solo mostramos el botón de retroceso sin AppBar
+                    Positioned(
+                      top: 35,
+                      left: 20,
+                      child: Container(
+                        height: 32,
+                        width: 32,
+                        decoration: BoxDecoration(
+                          color: Colors.white,
+                          shape: BoxShape.circle,
+                        ),
+                        child: Center(
+                          child: IconButton(
+                            padding: EdgeInsets.zero,
+                            constraints: BoxConstraints(),
+                            icon: Icon(
+                              Icons.arrow_back,
+                            ),
+                            onPressed: () {
+                              setState(() {
+                                _isLeader = null;
+                              });
+                            },
+                          ),
+                        ),
                       ),
-                      onPressed: () {
-                        setState(() {
-                          _isLeader = null;
-                        });
-                      },
                     ),
-                  ),
+                  ],
                 ),
               ),
-            ],
-          ),
-        ),
-        floatingActionButton: (_isLeader! ||
-            (!_isLeader! && _isQRCodeScanned))
-            ? SpeedDial(
-          backgroundColor: Color(0xFF0067FF),
-          foregroundColor: Colors.white,
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(16),
-          ),
-          animatedIcon: AnimatedIcons.menu_close,
-          overlayColor: Colors.black,
-          overlayOpacity: 0.5,
-          children: [
-            if (_isLeader!) ...[
-              if (_hasImage)
-                SpeedDialChild(
-                  child: Icon(_isReadyToShare
-                      ? Icons.share
-                      : Icons.share_outlined),
-                  label: 'Match',
-                  onTap: () => _toggleReadyToShare(),
-                ),
-              if (_hasImage)
-                SpeedDialChild(
-                  child: Icon(Icons.qr_code),
-                  label: 'View QR',
-                  onTap: () => _showQRCodeDialog(),
-                ),
-              SpeedDialChild(
-                child: Icon(Icons.add_photo_alternate),
-                label: 'Add image',
-                onTap: () => _pickImage(),
-              ),
-            ] else
-              ...[
-                SpeedDialChild(
-                  child: Icon(Icons.logout),
-                  label: 'Desconectar',
-                  onTap: () {
-                    // Cierra conexiones
-                    _connections.forEach((id, socket) {
-                      try {
-                        socket.close();
-                      } catch (e) {
-                        print('Error al cerrar conexión con $id: $e');
-                      }
-                    });
-
-                    _connections.clear();
-                    _connectedDevicesReadyState.clear();
-
-                    // Espera un frame antes de actualizar el UI
-                    Future.delayed(Duration(milliseconds: 100), () {
-                      if (mounted) {
-                        setState(() {
-                          _isQRCodeScanned = false;
-                        });
-                      }
-                    });
-
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      SnackBar(
-                        content: Text("Desconectado del room"),
-                        duration: Duration(seconds: 2),
+              floatingActionButton: (_isLeader! ||
+                      (!_isLeader! && _isQRCodeScanned))
+                  ? SpeedDial(
+                      backgroundColor: Color(0xFF0067FF),
+                      foregroundColor: Colors.white,
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(16),
                       ),
-                    );
-                  },
-                ),
-              ],
-          ],
-        )
-            : null,
-      ),
+                      animatedIcon: AnimatedIcons.menu_close,
+                      overlayColor: Colors.black,
+                      overlayOpacity: 0.5,
+                      children: [
+                        if (_isLeader!) ...[
+                          if (_hasImage)
+                            SpeedDialChild(
+                              child: Icon(_isReadyToShare
+                                  ? Icons.share
+                                  : Icons.share_outlined),
+                              label: 'Match',
+                              onTap: () => _toggleReadyToShare(),
+                            ),
+                          if (_hasImage)
+                            SpeedDialChild(
+                              child: Icon(Icons.qr_code),
+                              label: 'View QR',
+                              onTap: () => _showQRCodeDialog(),
+                            ),
+                          SpeedDialChild(
+                            child: Icon(Icons.add_photo_alternate),
+                            label: 'Add image',
+                            onTap: () => _pickImage(),
+                          ),
+                        ] else ...[
+                          SpeedDialChild(
+                            child: Icon(Icons.logout),
+                            label: 'Desconectar',
+                            onTap: () {
+                              // Cierra conexiones
+                              _connections.forEach((id, socket) {
+                                try {
+                                  socket.close();
+                                } catch (e) {
+                                  print('Error al cerrar conexión con $id: $e');
+                                }
+                              });
+
+                              _connections.clear();
+                              _connectedDevicesReadyState.clear();
+
+                              // Espera un frame antes de actualizar el UI
+                              Future.delayed(Duration(milliseconds: 100), () {
+                                if (mounted) {
+                                  setState(() {
+                                    _isQRCodeScanned = false;
+                                  });
+                                }
+                              });
+
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                SnackBar(
+                                  content: Text("Desconectado del room"),
+                                  duration: Duration(seconds: 2),
+                                ),
+                              );
+                            },
+                          ),
+                        ],
+                      ],
+                    )
+                  : null,
+            ),
     );
   }
 
@@ -1392,19 +1328,14 @@ class WifiSyncHomeState extends State<WifiSyncHome> {
         onVerticalDragUpdate: _onPanDragUpdate,
         onVerticalDragEnd: _onPanDragEnd,
         child: Container(
-          width: MediaQuery
-              .of(context)
-              .size
-              .width,
-          height: MediaQuery
-              .of(context)
-              .size
-              .height,
+          width: MediaQuery.of(context).size.width,
+          height: MediaQuery.of(context).size.height,
           decoration: BoxDecoration(
             color: Color(0xFFFFA91F).withOpacity(0.7),
           ),
           child: Stack(
             children: [
+              // Contenido central
               Center(
                 child: Column(
                   mainAxisAlignment: MainAxisAlignment.center,
@@ -1437,14 +1368,8 @@ class WifiSyncHomeState extends State<WifiSyncHome> {
         !_isLeader! &&
         _isQRCodeScanned) {
       return Container(
-        width: MediaQuery
-            .of(context)
-            .size
-            .width,
-        height: MediaQuery
-            .of(context)
-            .size
-            .height,
+        width: MediaQuery.of(context).size.width,
+        height: MediaQuery.of(context).size.height,
         decoration: BoxDecoration(
           color: Color(0xFF0078FF).withOpacity(0.7),
         ),
@@ -1492,9 +1417,7 @@ class WifiSyncHomeState extends State<WifiSyncHome> {
         if (_uiImage == null) return const SizedBox.shrink();
 
         // Obtener el tamaño de la pantalla
-        final Size screenSize = MediaQuery
-            .of(context)
-            .size;
+        final Size screenSize = MediaQuery.of(context).size;
 
         Widget imageView = InteractiveViewer(
           transformationController: _transformationController,
@@ -1607,9 +1530,7 @@ class WifiSyncHomeState extends State<WifiSyncHome> {
     if (!_isReadyToShare || _isFreeSliding) return;
 
     print(
-        'Finalizando deslizamiento en rol: ${_isLeader!
-            ? 'leader'
-            : 'linked'}');
+        'Finalizando deslizamiento en rol: ${_isLeader! ? 'leader' : 'linked'}');
     _resetSwipeState();
   }
 
@@ -1655,9 +1576,7 @@ class WifiSyncHomeState extends State<WifiSyncHome> {
       'type': 'swipe_simultaneous',
       'isSwipping': isSwipping,
       'role': _isLeader! ? 'leader' : 'linked',
-      'timestamp': DateTime
-          .now()
-          .millisecondsSinceEpoch,
+      'timestamp': DateTime.now().millisecondsSinceEpoch,
     };
 
     for (var connection in _connections.values) {
