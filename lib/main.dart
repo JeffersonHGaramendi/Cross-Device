@@ -2,12 +2,15 @@ import 'dart:async';
 import 'dart:developer';
 import 'dart:typed_data';
 import 'dart:ui' as ui;
+import 'package:image/image.dart' as img;
 
 import 'package:crossdevice/auth/login_screen.dart';
 import 'package:crossdevice/chooserole_screen.dart';
 import 'package:crossdevice/qr_code_view.dart';
 import 'package:crossdevice/qr_code_view_has_image.dart';
 import 'package:crossdevice/scan_qr.dart';
+import 'package:crossdevice/utils/chunked_image_loader.dart';
+import 'package:crossdevice/widgets/loading_overlay.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/material.dart';
@@ -112,6 +115,12 @@ class WifiSyncHomeState extends State<WifiSyncHome> {
   bool _awaitingLinkedSwipe = false;
   Timer? _syncWindowTimer;
   static const Duration syncWindowDuration = Duration(milliseconds: 750);
+
+  bool _isLoadingImage = false;
+  double _loadProgress = 0.0;
+
+  bool _isReceivingImage = false;
+  double _receiveProgress = 0.0;
 
   @override
   void initState() {
@@ -330,12 +339,6 @@ class WifiSyncHomeState extends State<WifiSyncHome> {
     double viewportX = -translation.x / scale;
     double viewportY = -translation.y / scale;
 
-    // Asegurarse de que el viewport no se salga de los límites de la imagen
-    viewportX =
-        viewportX.clamp(0.0, _uiImage!.width.toDouble() - viewportWidth);
-    viewportY =
-        viewportY.clamp(0.0, _uiImage!.height.toDouble() - viewportHeight);
-
     setState(() {
       _initialViewport = Rect.fromLTWH(
         viewportX,
@@ -449,59 +452,54 @@ class WifiSyncHomeState extends State<WifiSyncHome> {
     final screenSize = MediaQuery.of(context).size;
     final double scale = screenSize.width / leaderViewport.width;
 
-    // Paso del viewport (una "pantalla")
+    // Paso del viewport (una pantalla)
     final double stepX = leaderViewport.width;
     final double stepY = leaderViewport.height;
+
+    // Diferencias entre gestos
+    final double xDifference = leaderSlideX - linkedSlideX!;
+    final double yDifference = leaderSlideY - linkedSlideY!;
 
     double newX = leaderViewport.left;
     double newY = leaderViewport.top;
 
-    // Calcular diferencia entre gestos
-    final double xDifference = leaderSlideX - linkedSlideX!;
-    final double yDifference = leaderSlideY - linkedSlideY!;
-
-    log("Leader direction: $_direction");
-    log("xDifference: $xDifference, yDifference: $yDifference");
-
-    bool isOppositeHorizontal = (_direction == 'left' && xDifference > 0) ||
-        (_direction == 'right' && xDifference < 0);
-
-    bool isOppositeVertical = (_direction == 'up' && yDifference > 0) ||
-        (_direction == 'down' && yDifference < 0);
-
-    if (isOppositeHorizontal) {
-      newX = (_direction == 'left')
-          ? leaderViewport.left + stepX
-          : leaderViewport.left - stepX;
-
-      // Clamp para no salir de la imagen
-      newX = newX.clamp(0.0, _uiImage!.width - stepX);
+    switch (_direction) {
+      case 'left':
+        newX = leaderViewport.left + stepX;
+        newY = leaderViewport.top + yDifference;
+        break;
+      case 'right':
+        newX = leaderViewport.left - stepX;
+        newY = leaderViewport.top + yDifference;
+        break;
+      case 'up':
+        newY = leaderViewport.top + stepY;
+        newX = leaderViewport.left + xDifference;
+        break;
+      case 'down':
+        newY = leaderViewport.top - stepY;
+        newX = leaderViewport.left + xDifference;
+        break;
+      default:
+        print("❌ Dirección desconocida: $_direction");
+        return;
     }
 
-    if (isOppositeVertical) {
-      newY = (_direction == 'up')
-          ? leaderViewport.top + stepY
-          : leaderViewport.top - stepY;
+    final Matrix4 linkedTransform = Matrix4.identity()
+      ..scale(scale)
+      ..translate(-newX, -newY);
 
-      newY = newY.clamp(0.0, _uiImage!.height - stepY);
-    }
+    log("📥 Swipe ($_direction):");
+    log("  Δx = $xDifference, Δy = $yDifference");
+    log("  newX = $newX, newY = $newY");
 
-    // Solo aplicar si hubo movimiento válido
-    if (isOppositeHorizontal || isOppositeVertical) {
-      final Matrix4 linkedTransform = Matrix4.identity()
-        ..scale(scale)
-        ..translate(-newX, -newY);
+    setState(() {
+      _transformationController.value = linkedTransform;
+      _isReadyToShare = false;
+      _isFreeSliding = true;
+    });
 
-      setState(() {
-        _transformationController.value = linkedTransform;
-        _isReadyToShare = false;
-        _isFreeSliding = true;
-      });
-
-      log("✅ Viewport aplicado: newX=$newX, newY=$newY");
-    } else {
-      print('❌ Gestos no fueron opuestos. No se actualizará el viewport.');
-    }
+    log("✅ Viewport reposicionado: ($newX, $newY)");
   }
 
   void _broadcastReadyState() {
@@ -515,7 +513,8 @@ class WifiSyncHomeState extends State<WifiSyncHome> {
     }
   }
 
-  void _handleIncomingMessage(dynamic message, String connectionId) {
+  Future<void> _handleIncomingMessage(
+      dynamic message, String connectionId) async {
     Map<String, dynamic> messageData;
 
     try {
@@ -578,17 +577,42 @@ class WifiSyncHomeState extends State<WifiSyncHome> {
             return;
           }
 
-          // Decodifica los bytes de la imagen
-          final Uint8List bytes = base64Decode(base64Image);
-          _imageBytes = bytes;
+          // Simulación de recepción con progreso (chunking)
+          setState(() {
+            _isReceivingImage = true;
+            _receiveProgress = 0.0;
+          });
 
-          // Convierte los bytes en ui.Image
-          _decodeImageFromBytes(bytes).then((ui.Image decodedImage) {
+          final Uint8List rawBytes = base64Decode(base64Image);
+          const int chunkSize = 64 * 1024;
+          final int totalBytes = rawBytes.length;
+          int loaded = 0;
+          final buffer = BytesBuilder();
+
+          while (loaded < totalBytes) {
+            final end = (loaded + chunkSize).clamp(0, totalBytes);
+            buffer.add(rawBytes.sublist(loaded, end));
+            loaded = end;
+
             setState(() {
-              _uiImage = decodedImage;
+              _receiveProgress = (loaded / totalBytes).clamp(0.0, 0.99);
             });
 
-            // Luego llama a tu lógica de sincronización del viewport
+            await Future.delayed(const Duration(milliseconds: 10));
+          }
+
+          final Uint8List imageBytes = buffer.toBytes();
+          _imageBytes = imageBytes;
+
+          // Decodifica la imagen y llama a tu lógica
+          _decodeImageFromBytes(imageBytes).then((ui.Image decodedImage) {
+            setState(() {
+              _uiImage = decodedImage;
+              _isReceivingImage = false;
+              _receiveProgress = 0.0;
+            });
+
+            // Extrae información para sincronizar viewport
             final leaderViewport = messageData['leaderViewport'];
             final leaderSlideY = messageData['leaderSlideY'];
             final leaderSlideX = messageData['leaderSlideX'];
@@ -597,19 +621,17 @@ class WifiSyncHomeState extends State<WifiSyncHome> {
               print(
                   '❌ No se puede compartir: coordenadas del swipe son nulas.');
               return;
-            } else {
-              log('leaderSlideX: $leaderSlideX & leaderSlideY: $leaderSlideY');
             }
 
             _handleImageShared(
               messageData['imageBytes'],
-              // Asegúrate que este campo esté correcto si lo usas
               messageData['sender'],
               leaderViewport,
               leaderSlideY,
               leaderSlideX,
             );
           });
+
           break;
 
         case 'stop_sharing':
@@ -871,78 +893,43 @@ class WifiSyncHomeState extends State<WifiSyncHome> {
       try {
         final connection = _connections[deviceId];
         if (connection != null) {
-          // 1. Obtén el viewport actual del Leader sin modificarlo
-          _updateInitialViewportFromTransform(_transformationController.value);
-          Rect? currentViewport = _initialViewport;
+          final base64Image = base64Encode(_imageBytes!);
+          final leaderViewport = _getLeaderViewport();
 
-          if (currentViewport == null) {
+          if (leaderViewport == null) {
             print('❌ No se pudo obtener el viewport actual del Leader.');
             return;
           }
 
-          // 2. Calcula la nueva porción en base a la dirección del swipe
-          double newLeft = currentViewport.left;
-          double newTop = currentViewport.top;
-
-          switch (_direction) {
-            case 'left':
-              newLeft = (newLeft - currentViewport.width)
-                  .clamp(0.0, _uiImage!.width - currentViewport.width);
-              break;
-            case 'right':
-              newLeft = (newLeft + currentViewport.width)
-                  .clamp(0.0, _uiImage!.width - currentViewport.width);
-              break;
-            case 'up':
-              newTop = (newTop - currentViewport.height)
-                  .clamp(0.0, _uiImage!.height - currentViewport.height);
-              break;
-            case 'down':
-              newTop = (newTop + currentViewport.height)
-                  .clamp(0.0, _uiImage!.height - currentViewport.height);
-              break;
-          }
-
-          final newViewport = Rect.fromLTWH(
-            newLeft,
-            newTop,
-            currentViewport.width,
-            currentViewport.height,
-          );
-
           if (leaderSlideX == null || leaderSlideY == null) {
-            print(
-                '❌ No se puede compartir imagen: coordenadas del swipe nulas');
+            print('❌ Coordenadas del swipe son nulas.');
             return;
           }
 
           final metadata = {
             'type': 'image_shared',
-            'imageBytes': base64Encode(_imageBytes!),
+            'imageBytes': base64Image,
             'sender': user.currentUser?.email ?? 'unknown',
             'leaderViewport': {
-              'left': newViewport.left,
-              'top': newViewport.top,
-              'width': newViewport.width,
-              'height': newViewport.height,
+              'left': leaderViewport.left,
+              'top': leaderViewport.top,
+              'width': leaderViewport.width,
+              'height': leaderViewport.height,
             },
-            'leaderSlideY': leaderSlideY!,
-            'leaderSlideX': leaderSlideX!
+            'leaderSlideX': leaderSlideX,
+            'leaderSlideY': leaderSlideY,
           };
 
           connection.add(json.encode(metadata));
 
-          // No actualices el transformationController.value aquí
           _updateSharingStates();
           _broadcastSharingStateUpdate();
         } else {
-          print('No se encontró la conexión para el dispositivo: $deviceId');
+          print('No se encontró conexión para el dispositivo $deviceId');
         }
       } catch (e) {
         print('Error al compartir imagen: $e');
       }
-    } else {
-      print('No hay imagen disponible para compartir');
     }
   }
 
@@ -1020,13 +1007,32 @@ class WifiSyncHomeState extends State<WifiSyncHome> {
           await picker.pickImage(source: ImageSource.gallery);
 
       if (pickedFile != null) {
-        // Mantener una referencia a las conexiones actuales
+        setState(() {
+          _isLoadingImage = true;
+          _loadProgress = 0.0;
+        });
+
+        // Guardamos conexiones actuales por si se reinicia el estado
         final currentConnections = Map<String, WebSocket>.from(_connections);
 
         final Uint8List imageBytes = await pickedFile.readAsBytes();
-        final ui.Image uiImage = await _loadImage(imageBytes);
 
-        // Verificar que las conexiones siguen activas
+        // Cargar imagen con progreso real
+        final img.Image? decoded = await ChunkedImageLoader.decodeWithProgress(
+          imageBytes,
+          (progress) {
+            setState(() {
+              _loadProgress = progress;
+            });
+          },
+        );
+
+        if (decoded == null)
+          throw Exception('No se pudo decodificar la imagen.');
+
+        final ui.Image uiImage =
+            await ChunkedImageLoader.convertToUiImage(decoded);
+
         if (!mounted) return;
 
         setState(() {
@@ -1034,12 +1040,13 @@ class WifiSyncHomeState extends State<WifiSyncHome> {
           _uiImage = uiImage;
           _hasImage = true;
           _isSharing = false;
-          // Restaurar las conexiones si se perdieron
+          _isLoadingImage = false;
+          _isGestureSyncEnabled = true;
+
           if (_connections.isEmpty) {
             _connections = currentConnections;
           }
 
-          // Inicializar el controlador de transformación si no existe
           _transformationController = TransformationController();
         });
 
@@ -1047,22 +1054,21 @@ class WifiSyncHomeState extends State<WifiSyncHome> {
         _broadcastReadyState();
         _checkAllDevicesReady();
 
-        // Log del estado actual
-        print('Estado actualizado después de cargar la imagen:');
-        print('Dispositivos conectados: ${_connections.length}');
-        print('Dispositivos registrados: ${connectedDevices.length}');
-        print('_hasImage: $_hasImage');
-        print('_imageBytes: ${_imageBytes != null}');
-        print('_uiImage: ${_uiImage != null}');
-        print(
-            'Dimensiones de la imagen: ${_uiImage?.width}x${_uiImage?.height}');
+        // Logs de estado
+        print('✅ Imagen cargada correctamente');
+        print('📡 Dispositivos conectados: ${_connections.length}');
+        print('📎 _hasImage: $_hasImage');
+        print('📷 Tamaño imagen: ${_uiImage?.width}x${_uiImage?.height}');
       }
     } catch (e, stackTrace) {
-      print('Error al cargar la imagen: $e');
+      print('❌ Error al cargar la imagen: $e');
       print('Stack trace: $stackTrace');
 
-      // Mostrar error al usuario
       if (mounted) {
+        setState(() {
+          _isLoadingImage = false;
+        });
+
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text('Error al cargar la imagen: ${e.toString()}'),
@@ -1099,15 +1105,16 @@ class WifiSyncHomeState extends State<WifiSyncHome> {
   }
 
   void _onInteractionUpdate(ScaleUpdateDetails details) {
-    if (_uiImage != null && _isSharing && _isGestureSyncEnabled) {
+    if (_uiImage != null && !_isReadyToShare && _isGestureSyncEnabled) {
+      print('📦 Interacción detectada: delta=${details.focalPointDelta}');
+
       final delta = details.focalPointDelta;
-      // final scale = details.scale;
       final focalPoint = details.localFocalPoint;
 
-      // Aplicar transformación local
+      // ⚠️ Forzar transformación manualmente (modo prueba)
       _applyTransformation(delta, 1.0, focalPoint);
 
-      // Broadcast del gesto
+      // También puedes comentar esta línea si no quieres broadcasting aún
       _broadcastGesture(delta, 1.0, focalPoint);
     }
   }
@@ -1144,6 +1151,7 @@ class WifiSyncHomeState extends State<WifiSyncHome> {
   }
 
   void _applyTransformation(Offset delta, double scale, Offset focalPoint) {
+    // ⚠️ Comentado el control
     // if (!_isSharing) return;
 
     final Matrix4 currentTransform = _transformationController.value;
@@ -1151,13 +1159,10 @@ class WifiSyncHomeState extends State<WifiSyncHome> {
 
     newTransform.translate(delta.dx, delta.dy);
 
-    print('🎯 Transformación aplicada: translate(${delta.dx}, ${delta.dy})');
+    print('🎯 Nueva transformación: ${newTransform.getTranslation()}');
 
     setState(() {
       _transformationController.value = newTransform;
-      if (_isReadyToShare) {
-        _updateInitialViewportFromTransform(newTransform);
-      }
     });
   }
 
@@ -1291,6 +1296,11 @@ class WifiSyncHomeState extends State<WifiSyncHome> {
   }
 
   Widget _buildImageView() {
+    if (_isLoadingImage || _isReceivingImage) {
+      return LoadingOverlay(
+          progress: _isLoadingImage ? _loadProgress : _receiveProgress);
+    }
+
     // Si es líder y no hay imagen, mostrar QR
     if ((_imageBytes == null || _uiImage == null) && _isLeader!) {
       return QrCodeView();
@@ -1447,36 +1457,31 @@ class WifiSyncHomeState extends State<WifiSyncHome> {
         // Solo aplicar gestos si la imagen existe
         if (_uiImage == null) return const SizedBox.shrink();
 
-        Widget imageView = InteractiveViewer(
-          transformationController: _transformationController,
-          panEnabled: true,
-          scaleEnabled: false,
-          onInteractionUpdate: _onInteractionUpdate,
-          constrained: false,
-          boundaryMargin: EdgeInsets.all(double.infinity),
-          child: SizedBox(
-            width: _uiImage!.width.toDouble(),
-            height: _uiImage!.height.toDouble(),
-            child: AnimatedBuilder(
-              animation: _transformationController,
-              builder: (context, child) {
-                return CustomPaint(
-                  painter: LazyImagePainter(
-                    image: _uiImage!,
-                    currentTransform: _transformationController.value,
-                    screenSize: Size(
-                      _uiImage!.width.toDouble(),
-                      _uiImage!.height.toDouble(),
-                    ),
-                    showHighlight: !_isFreeSliding,
-                  ),
-                  size: Size(
-                    _uiImage!.width.toDouble(),
-                    _uiImage!.height.toDouble(),
-                  ),
-                );
-              },
-            ),
+        Widget imageView = GestureDetector(
+          onPanStart: _onPanDragStart,
+          onPanUpdate: (DragUpdateDetails details) {
+            final fakeScaleDetails = ScaleUpdateDetails(
+              focalPoint: details.localPosition,
+              localFocalPoint: details.localPosition,
+              focalPointDelta: details.delta,
+              scale: 1.0, // No usas zoom
+            );
+            _onInteractionUpdate(fakeScaleDetails);
+          },
+          onPanEnd: _onPanDragEnd,
+          child: AnimatedBuilder(
+            animation: _transformationController,
+            builder: (context, child) {
+              return CustomPaint(
+                painter: LazyImagePainter(
+                  image: _uiImage!,
+                  currentTransform: _transformationController.value,
+                  screenSize: MediaQuery.of(context).size,
+                  showHighlight: !_isFreeSliding,
+                ),
+                size: MediaQuery.of(context).size,
+              );
+            },
           ),
         );
 
@@ -1542,9 +1547,7 @@ class WifiSyncHomeState extends State<WifiSyncHome> {
   }
 
   void _onPanDragUpdate(DragUpdateDetails details) {
-    final Offset delta = details.delta;
-
-    if (_isReadyToShare && !_isFreeSliding) {
+    if (_isReadyToShare) {
       final double currentX = details.localPosition.dx;
       final double currentY = details.localPosition.dy;
       final double dragDistanceX = currentX - _startHorizontalDragX;
@@ -1573,11 +1576,6 @@ class WifiSyncHomeState extends State<WifiSyncHome> {
       });
 
       return;
-    }
-
-    // Modo libre: mover imagen y detectar dirección del swipe
-    if (_isFreeSliding) {
-      _applyTransformation(delta, 1.0, details.localPosition);
     }
 
     double currentX = details.localPosition.dx;
@@ -1729,18 +1727,20 @@ class LazyImagePainter extends CustomPainter {
     final scale = currentTransform.getMaxScaleOnAxis();
 
     // Calcular el área visible de la imagen (viewport)
-    double viewportX =
-        (-translation.x / scale).clamp(0.0, image.width.toDouble());
-    double viewportY =
-        (-translation.y / scale).clamp(0.0, image.height.toDouble());
-    double viewportWidth =
-        (screenSize.width / scale).clamp(0.0, image.width - viewportX);
-    double viewportHeight =
-        (screenSize.height / scale).clamp(0.0, image.height - viewportY);
+    double viewportX = -translation.x / scale;
+    double viewportY = -translation.y / scale;
+    double viewportWidth = screenSize.width / scale;
+    double viewportHeight = screenSize.height / scale;
 
-    final srcRect =
-        Rect.fromLTWH(viewportX, viewportY, viewportWidth, viewportHeight);
+    Rect srcRect =
+        Rect.fromLTWH(viewportX, viewportY, viewportWidth, viewportHeight)
+            .intersect(Rect.fromLTWH(
+                0, 0, image.width.toDouble(), image.height.toDouble()));
+
     final dstRect = Offset.zero & screenSize;
+
+    print('🖼️ Paint -> translate: ${translation.x}, ${translation.y}');
+    print('🖼️ Paint -> viewport: $viewportX, $viewportY');
 
     // Dibujar solo el recorte visible
     canvas.drawImageRect(image, srcRect, dstRect, Paint());
