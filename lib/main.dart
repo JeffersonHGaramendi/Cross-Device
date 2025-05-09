@@ -110,6 +110,8 @@ class WifiSyncHomeState extends State<WifiSyncHome> {
   double? leaderSlideX;
   double? linkedSlideX;
 
+  double? leaderScale;
+
   String? _qrScanError;
 
   bool _awaitingLinkedSwipe = false;
@@ -121,6 +123,8 @@ class WifiSyncHomeState extends State<WifiSyncHome> {
 
   bool _isReceivingImage = false;
   double _receiveProgress = 0.0;
+
+  StringBuffer? _imageChunkBuffer;
 
   @override
   void initState() {
@@ -149,7 +153,9 @@ class WifiSyncHomeState extends State<WifiSyncHome> {
   void _sendPingToAllClients() {
     final pingMessage = json.encode({
       'type': 'ping',
-      'timestamp': DateTime.now().millisecondsSinceEpoch,
+      'timestamp': DateTime
+          .now()
+          .millisecondsSinceEpoch,
     });
 
     _connections.forEach((id, connection) {
@@ -165,7 +171,9 @@ class WifiSyncHomeState extends State<WifiSyncHome> {
   void _checkConnectionTimeouts() {
     final now = DateTime.now();
     _lastPongTimes.forEach((id, lastPong) {
-      if (now.difference(lastPong).inSeconds > 15) {
+      if (now
+          .difference(lastPong)
+          .inSeconds > 15) {
         // 15 seconds timeout
         print('Connection timeout for client $id');
         _handleDisconnection(id);
@@ -174,8 +182,12 @@ class WifiSyncHomeState extends State<WifiSyncHome> {
   }
 
   void _initializeLocalDevice() async {
-    final size = MediaQuery.of(context).size;
-    String deviceId = 'local_${DateTime.now().millisecondsSinceEpoch}';
+    final size = MediaQuery
+        .of(context)
+        .size;
+    String deviceId = 'local_${DateTime
+        .now()
+        .millisecondsSinceEpoch}';
     DeviceInfo localDevice = DeviceInfo(
       id: deviceId,
       portion: Rect.zero,
@@ -200,7 +212,10 @@ class WifiSyncHomeState extends State<WifiSyncHome> {
 
   // Asegúrate de que esta función esté actualizada para manejar los nuevos tipos de mensajes
   void _handleConnection(WebSocket webSocket) {
-    String connectionId = DateTime.now().millisecondsSinceEpoch.toString();
+    String connectionId = DateTime
+        .now()
+        .millisecondsSinceEpoch
+        .toString();
 
     // Configurar el WebSocket para no cerrarse por inactividad
     webSocket.pingInterval = const Duration(seconds: 5);
@@ -213,7 +228,8 @@ class WifiSyncHomeState extends State<WifiSyncHome> {
 
     _addDebugInfo('Client connected: $connectionId');
     print(
-        'Nuevo dispositivo conectado. Total dispositivos: ${_connections.length}');
+        'Nuevo dispositivo conectado. Total dispositivos: ${_connections
+            .length}');
 
     setState(() {
       _connectedDevicesReadyState[connectionId] = false;
@@ -223,7 +239,7 @@ class WifiSyncHomeState extends State<WifiSyncHome> {
     _broadcastReadyState();
 
     webSocket.listen(
-      (message) {
+          (message) {
         _lastPongTimes[connectionId] = DateTime.now();
         _connectionStates[connectionId]?.lastActivity = DateTime.now();
 
@@ -268,7 +284,8 @@ class WifiSyncHomeState extends State<WifiSyncHome> {
     _checkAllDevicesReady();
 
     print(
-        'Dispositivo desconectado. Dispositivos restantes: ${_connections.length}');
+        'Dispositivo desconectado. Dispositivos restantes: ${_connections
+            .length}');
   }
 
   void _connectToDevice(String data) async {
@@ -281,14 +298,17 @@ class WifiSyncHomeState extends State<WifiSyncHome> {
 
     try {
       WebSocket webSocket = await WebSocket.connect('ws://$ip:8080');
-      String connectionId = DateTime.now().millisecondsSinceEpoch.toString();
+      String connectionId = DateTime
+          .now()
+          .millisecondsSinceEpoch
+          .toString();
       _connections[connectionId] = webSocket;
       _addDebugInfo('Connected to: $ip');
 
       setState(() {});
 
       webSocket.listen(
-        (message) {
+            (message) {
           _handleIncomingMessage(message, connectionId);
         },
         onError: (error) => _addDebugInfo('WebSocket error: $error'),
@@ -327,7 +347,9 @@ class WifiSyncHomeState extends State<WifiSyncHome> {
   void _updateInitialViewportFromTransform(Matrix4 transform) {
     if (_uiImage == null) return;
 
-    final Size screenSize = MediaQuery.of(context).size;
+    final Size screenSize = MediaQuery
+        .of(context)
+        .size;
     final double scale = transform.getMaxScaleOnAxis();
     final Vector3 translation = transform.getTranslation();
 
@@ -363,7 +385,7 @@ class WifiSyncHomeState extends State<WifiSyncHome> {
       _connectedDevicesReadyState.updateAll((key, value) => false);
       _isFreeSliding = true;
       _isGestureSyncEnabled =
-          true; // Mantener la sincronización de gestos activa
+      true; // Mantener la sincronización de gestos activa
     });
   }
 
@@ -386,18 +408,18 @@ class WifiSyncHomeState extends State<WifiSyncHome> {
 
   void _checkAllDevicesReady() {
     bool allReady =
-        _connectedDevicesReadyState.values.every((isReady) => isReady);
+    _connectedDevicesReadyState.values.every((isReady) => isReady);
     setState(() {
       _allDevicesReady = allReady && _isReadyToShare;
     });
   }
 
-  void _handleImageShared(
-      String base64Image,
+  void _handleImageShared(String base64Image,
       String sender,
       Map<String, dynamic>? leaderViewport,
       double leaderSlideY,
-      double leaderSlideX) {
+      double leaderSlideX,
+      double leaderScale) {
     try {
       if (leaderViewport == null) {
         log('Error: leaderViewport recibido es nulo: $leaderViewport');
@@ -405,6 +427,22 @@ class WifiSyncHomeState extends State<WifiSyncHome> {
       }
       final Uint8List imageBytes = base64Decode(base64Image);
       ui.decodeImageFromList(imageBytes, (ui.Image result) {
+        // 🔧 Primero aplicar transformación (sin disparar render aún)
+        if (!_isLeader!) {
+          _uiImage = result;
+          _positionLinkedViewport(
+            Rect.fromLTWH(
+              leaderViewport['left'],
+              leaderViewport['top'],
+              leaderViewport['width'],
+              leaderViewport['height'],
+            ),
+            leaderSlideY,
+            leaderSlideX,
+            leaderScale,
+          );
+        }
+
         setState(() {
           _uiImage = result;
           _imageBytes = imageBytes;
@@ -413,21 +451,7 @@ class WifiSyncHomeState extends State<WifiSyncHome> {
           _isGestureSyncEnabled = true;
         });
 
-        log(" $_isLeader, $_uiImage, $leaderViewport ");
-        // Posiciona el viewport basado en el Leader si somos Linked
-        if (!_isLeader! && _uiImage != null) {
-          _positionLinkedViewport(
-              Rect.fromLTWH(
-                leaderViewport['left'],
-                leaderViewport['top'],
-                leaderViewport['width'],
-                leaderViewport['height'],
-              ),
-              leaderSlideY,
-              leaderSlideX);
-        }
-
-        print('Imagen recibida y procesada correctamente');
+        print('Imagen recibida y posicionada correctamente');
       });
     } catch (e) {
       print('Error al procesar la imagen recibida: $e');
@@ -442,47 +466,52 @@ class WifiSyncHomeState extends State<WifiSyncHome> {
     return completer.future;
   }
 
-  void _positionLinkedViewport(
-      Rect leaderViewport, double leaderSlideY, double leaderSlideX) {
+  void _positionLinkedViewport(Rect leaderViewport,
+      double leaderSlideY,
+      double leaderSlideX,
+      double leaderScale,) {
     if (_uiImage == null || linkedSlideY == null || linkedSlideX == null) {
-      log('Error: Datos insuficientes para calcular el viewport');
+      log('❌ Datos insuficientes para calcular el viewport');
       return;
     }
 
-    final screenSize = MediaQuery.of(context).size;
-    final double scale = screenSize.width / leaderViewport.width;
+    final Size linkedScreenSize = MediaQuery
+        .of(context)
+        .size;
+    final double scale = leaderScale;
 
-    // Paso del viewport (una pantalla)
-    final double stepX = leaderViewport.width;
-    final double stepY = leaderViewport.height;
+    final double linkedWidthInImage = linkedScreenSize.width / scale;
+    final double linkedHeightInImage = linkedScreenSize.height / scale;
 
-    // Diferencias entre gestos
-    final double xDifference = leaderSlideX - linkedSlideX!;
-    final double yDifference = leaderSlideY - linkedSlideY!;
-
+    // Por defecto: comenzar desde la misma posición
     double newX = leaderViewport.left;
     double newY = leaderViewport.top;
 
-    switch (_direction) {
-      case 'left':
-        newX = leaderViewport.left + stepX;
-        newY = leaderViewport.top + yDifference;
-        break;
-      case 'right':
-        newX = leaderViewport.left - stepX;
-        newY = leaderViewport.top + yDifference;
-        break;
-      case 'up':
-        newY = leaderViewport.top + stepY;
-        newX = leaderViewport.left + xDifference;
-        break;
-      case 'down':
-        newY = leaderViewport.top - stepY;
-        newX = leaderViewport.left + xDifference;
-        break;
-      default:
-        print("❌ Dirección desconocida: $_direction");
-        return;
+    // ➡️ Linked se posiciona a la izquierda del Leader
+    if (_direction == 'right') {
+      newX = leaderViewport.left - linkedWidthInImage;
+      newY = leaderViewport.top + (leaderSlideY - linkedSlideY!);
+    }
+
+    // ⬅️ Linked se posiciona a la derecha del Leader
+    else if (_direction == 'left') {
+      newX = leaderViewport.right;
+      newY = leaderViewport.top + (leaderSlideY - linkedSlideY!);
+    }
+
+    // ⬆️ Linked se posiciona debajo del Leader
+    else if (_direction == 'up') {
+      newY = leaderViewport.bottom;
+      newX = leaderViewport.left + (leaderSlideX - linkedSlideX!);
+    }
+
+    // ⬇️ Linked se posiciona encima del Leader
+    else if (_direction == 'down') {
+      newY = leaderViewport.top - linkedHeightInImage;
+      newX = leaderViewport.left + (leaderSlideX - linkedSlideX!);
+    } else {
+      print("❌ Dirección desconocida: $_direction");
+      return;
     }
 
     final Matrix4 linkedTransform = Matrix4.identity()
@@ -490,8 +519,10 @@ class WifiSyncHomeState extends State<WifiSyncHome> {
       ..translate(-newX, -newY);
 
     log("📥 Swipe ($_direction):");
-    log("  Δx = $xDifference, Δy = $yDifference");
-    log("  newX = $newX, newY = $newY");
+    log("  LeaderViewport: $leaderViewport");
+    log("  newX: $newX, newY: $newY");
+    log("  linked width in image: $linkedWidthInImage");
+    log("  linked height in image: $linkedHeightInImage");
 
     setState(() {
       _transformationController.value = linkedTransform;
@@ -499,7 +530,7 @@ class WifiSyncHomeState extends State<WifiSyncHome> {
       _isFreeSliding = true;
     });
 
-    log("✅ Viewport reposicionado: ($newX, $newY)");
+    log("✅ Viewport reposicionado en Linked.");
   }
 
   void _broadcastReadyState() {
@@ -513,8 +544,8 @@ class WifiSyncHomeState extends State<WifiSyncHome> {
     }
   }
 
-  Future<void> _handleIncomingMessage(
-      dynamic message, String connectionId) async {
+  Future<void> _handleIncomingMessage(dynamic message,
+      String connectionId) async {
     Map<String, dynamic> messageData;
 
     try {
@@ -567,75 +598,46 @@ class WifiSyncHomeState extends State<WifiSyncHome> {
         case 'swipe_simultaneous':
           _handleSimultaneousSwipe(connectionId, messageData);
           break;
-        case 'image_shared':
-          print('📥 Imagen recibida en Linked');
+        case 'image_chunk':
+          final String chunk = messageData['chunk'] ?? '';
+          final bool isLast = messageData['isLast'] ?? false;
 
-          final String? base64Image = messageData['imageBytes'];
+          // Acumulador local (debes crearlo a nivel de clase)
+          _imageChunkBuffer ??= StringBuffer();
+          _imageChunkBuffer!.write(chunk);
 
-          if (base64Image == null || base64Image.isEmpty) {
-            print('❌ imageBytes es nulo o vacío');
-            return;
-          }
-
-          // Simulación de recepción con progreso (chunking)
           setState(() {
+            _receiveProgress = (_imageChunkBuffer!.length / (15 * 1024 * 1024))
+                .clamp(0.0, 0.99); // Asume máximo 15MB base64
             _isReceivingImage = true;
-            _receiveProgress = 0.0;
           });
 
-          final Uint8List rawBytes = base64Decode(base64Image);
-          const int chunkSize = 64 * 1024;
-          final int totalBytes = rawBytes.length;
-          int loaded = 0;
-          final buffer = BytesBuilder();
+          if (isLast) {
+            final completeBase64 = _imageChunkBuffer.toString();
+            _imageChunkBuffer = null;
 
-          while (loaded < totalBytes) {
-            final end = (loaded + chunkSize).clamp(0, totalBytes);
-            buffer.add(rawBytes.sublist(loaded, end));
-            loaded = end;
+            final Uint8List imageBytes = base64Decode(completeBase64);
+            _imageBytes = imageBytes;
 
-            setState(() {
-              _receiveProgress = (loaded / totalBytes).clamp(0.0, 0.99);
-            });
-
-            await Future.delayed(const Duration(milliseconds: 10));
-          }
-
-          final Uint8List imageBytes = buffer.toBytes();
-          _imageBytes = imageBytes;
-
-          // Decodifica la imagen y llama a tu lógica
-          _decodeImageFromBytes(imageBytes).then((ui.Image decodedImage) {
+            final decodedImage = await _decodeImageFromBytes(imageBytes);
             setState(() {
               _uiImage = decodedImage;
               _isReceivingImage = false;
               _receiveProgress = 0.0;
             });
 
-            // Extrae información para sincronizar viewport
-            final leaderViewport = messageData['leaderViewport'];
-            final leaderSlideY = messageData['leaderSlideY'];
-            final leaderSlideX = messageData['leaderSlideX'];
-
-            if (leaderSlideX == null || leaderSlideY == null) {
-              print(
-                  '❌ No se puede compartir: coordenadas del swipe son nulas.');
-              return;
-            }
-
             _handleImageShared(
-              messageData['imageBytes'],
+              completeBase64,
               messageData['sender'],
-              leaderViewport,
-              leaderSlideY,
-              leaderSlideX,
+              messageData['leaderViewport'],
+              messageData['leaderSlideY'],
+              messageData['leaderSlideX'],
+              messageData['leaderScale'],
             );
-          });
-
+          }
           break;
-
-        case 'stop_sharing':
-          _handleStopSharing();
+        case 'stop_session':
+          _resetSession();
           break;
         case 'set_all_ready':
           _handleSetAllReady(messageData['isReady']);
@@ -684,7 +686,9 @@ class WifiSyncHomeState extends State<WifiSyncHome> {
     final transform = _transformationController.value;
     final scale = transform.getMaxScaleOnAxis();
     final translation = transform.getTranslation();
-    final screenSize = MediaQuery.of(context).size;
+    final screenSize = MediaQuery
+        .of(context)
+        .size;
 
     // Calcular las dimensiones del viewport visible
     double viewportWidth = screenSize.width / scale;
@@ -694,6 +698,8 @@ class WifiSyncHomeState extends State<WifiSyncHome> {
     double viewportX = -translation.x / scale;
     double viewportY = -translation.y / scale;
 
+    leaderScale = scale;
+
     return Rect.fromLTWH(
       viewportX,
       viewportY,
@@ -702,15 +708,17 @@ class WifiSyncHomeState extends State<WifiSyncHome> {
     );
   }
 
-  void _forwardGestureToAllDevices(
-      Map<String, dynamic> gestureData, String originalSenderId) {
+  void _forwardGestureToAllDevices(Map<String, dynamic> gestureData,
+      String originalSenderId) {
     if (!_isLeader! || !_isSharing) return;
 
     final forwardedData = {
       ...gestureData,
       'forwarded': true,
       'originalSenderId': originalSenderId,
-      'timestamp': DateTime.now().millisecondsSinceEpoch,
+      'timestamp': DateTime
+          .now()
+          .millisecondsSinceEpoch,
     };
 
     print(
@@ -735,7 +743,7 @@ class WifiSyncHomeState extends State<WifiSyncHome> {
       _isFreeSliding = !isReady;
       _connectedDevicesReadyState.updateAll((key, value) => isReady);
       _isGestureSyncEnabled =
-          true; // Mantener la sincronización de gestos activa
+      true; // Mantener la sincronización de gestos activa
     });
     _checkAllDevicesReady();
 
@@ -763,8 +771,8 @@ class WifiSyncHomeState extends State<WifiSyncHome> {
     }
   }
 
-  void _handleSimultaneousSwipe(
-      String connectionId, Map<String, dynamic> messageData) {
+  void _handleSimultaneousSwipe(String connectionId,
+      Map<String, dynamic> messageData) {
     bool isSwipping = messageData['isSwipping'];
     String remoteRole = messageData['role'];
 
@@ -874,7 +882,9 @@ class WifiSyncHomeState extends State<WifiSyncHome> {
       'type': 'sharing_state_update',
       'isReadyToShare': false,
       'isFreeSliding': true,
-      'timestamp': DateTime.now().millisecondsSinceEpoch,
+      'timestamp': DateTime
+          .now()
+          .millisecondsSinceEpoch,
     };
 
     _connections.forEach((deviceId, connection) {
@@ -888,49 +898,74 @@ class WifiSyncHomeState extends State<WifiSyncHome> {
     });
   }
 
-  void _shareImageWithDevice(String deviceId) {
-    if (_imageBytes != null && _uiImage != null) {
-      try {
-        final connection = _connections[deviceId];
-        if (connection != null) {
-          final base64Image = base64Encode(_imageBytes!);
-          final leaderViewport = _getLeaderViewport();
-
-          if (leaderViewport == null) {
-            print('❌ No se pudo obtener el viewport actual del Leader.');
-            return;
-          }
-
-          if (leaderSlideX == null || leaderSlideY == null) {
-            print('❌ Coordenadas del swipe son nulas.');
-            return;
-          }
-
-          final metadata = {
-            'type': 'image_shared',
-            'imageBytes': base64Image,
-            'sender': user.currentUser?.email ?? 'unknown',
-            'leaderViewport': {
-              'left': leaderViewport.left,
-              'top': leaderViewport.top,
-              'width': leaderViewport.width,
-              'height': leaderViewport.height,
-            },
-            'leaderSlideX': leaderSlideX,
-            'leaderSlideY': leaderSlideY,
-          };
-
-          connection.add(json.encode(metadata));
-
-          _updateSharingStates();
-          _broadcastSharingStateUpdate();
-        } else {
-          print('No se encontró conexión para el dispositivo $deviceId');
-        }
-      } catch (e) {
-        print('Error al compartir imagen: $e');
-      }
+  void _shareImageWithDevice(String deviceId) async {
+    if (_imageBytes == null || _uiImage == null) {
+      print('❌ No hay imagen cargada para compartir.');
+      return;
     }
+
+    final connection = _connections[deviceId];
+    if (connection == null) {
+      print('❌ No se encontró conexión para el dispositivo $deviceId');
+      return;
+    }
+
+    final String base64Image = base64Encode(_imageBytes!);
+    const int chunkSize = 64 * 1024;
+    int offset = 0;
+
+    // Metadata para la imagen (solo en el primer chunk)
+    final leaderViewport = _getLeaderViewport();
+    if (leaderViewport == null) {
+      print('❌ No se pudo obtener el viewport del Leader');
+      return;
+    }
+
+    if (leaderSlideX == null || leaderSlideY == null || leaderScale == null) {
+      print('❌ Coordenadas del swipe o escala nulas.');
+      return;
+    }
+
+    final metadata = {
+      'type': 'image_chunk',
+      'leaderViewport': {
+        'left': leaderViewport.left,
+        'top': leaderViewport.top,
+        'width': leaderViewport.width,
+        'height': leaderViewport.height,
+      },
+      'leaderSlideX': leaderSlideX,
+      'leaderSlideY': leaderSlideY,
+      'leaderScale': leaderScale,
+      'sender': user.currentUser?.email ?? 'unknown',
+    };
+
+    // 🔁 Envío por partes
+    while (offset < base64Image.length) {
+      final end = (offset + chunkSize).clamp(0, base64Image.length);
+      final chunk = base64Image.substring(offset, end);
+
+      final message = {
+        ...metadata,
+        'type': 'image_chunk',
+        'chunk': chunk,
+        'isLast': end == base64Image.length,
+      };
+
+      try {
+        connection.add(json.encode(message));
+      } catch (e) {
+        print('❌ Error al enviar chunk: $e');
+        _handleDisconnection(deviceId);
+        return;
+      }
+
+      offset = end;
+      await Future.delayed(const Duration(milliseconds: 5));
+    }
+
+    _updateSharingStates();
+    _broadcastSharingStateUpdate();
   }
 
   void _handleStopSharing() {
@@ -948,7 +983,9 @@ class WifiSyncHomeState extends State<WifiSyncHome> {
   }
 
   void _sendScreenSize(String connectionId) {
-    final size = MediaQuery.of(context).size;
+    final size = MediaQuery
+        .of(context)
+        .size;
     final screenSizeData = {
       'type': 'screen_size',
       'width': size.width,
@@ -980,86 +1017,97 @@ class WifiSyncHomeState extends State<WifiSyncHome> {
   }
 
   void _handleSyncGesture(Map<String, dynamic> gestureData) {
-    if (!_isSharing) return;
+    if (!_isSharing || _uiImage == null) return;
 
-    // Evitar aplicar el gesto si somos el emisor original
-    if (gestureData['senderId'] == user.currentUser?.email) {
-      return;
-    }
+    if (gestureData['senderId'] == user.currentUser?.email) return;
 
-    final delta = Offset((gestureData['deltaX'] as num).toDouble(),
-        (gestureData['deltaY'] as num).toDouble());
-    final scale = (gestureData['scale'] as num).toDouble();
-    final focalPoint = Offset((gestureData['focalPointX'] as num).toDouble(),
-        (gestureData['focalPointY'] as num).toDouble());
+    // El delta ya viene en coordenadas de imagen (ajustado por scale en el emisor)
+    final Offset remoteDelta = Offset(
+      (gestureData['deltaX'] as num).toDouble(),
+      (gestureData['deltaY'] as num).toDouble(),
+    );
 
-    print(
-        '📥 Aplicando gesto en ${myDevice?.id}, recibido de ${gestureData['senderId']}');
-    print(
-        '➡️ Delta: (${delta.dx}, ${delta.dy}), Focal: (${focalPoint.dx}, ${focalPoint.dy})');
-    _applyTransformation(delta, scale, focalPoint);
+    final Offset focalPoint = Offset(
+      (gestureData['focalPointX'] as num).toDouble(),
+      (gestureData['focalPointY'] as num).toDouble(),
+    );
+
+    print('📥 Gesto recibido desde ${gestureData['senderId']}');
+    print('✅ Delta en imagen: $remoteDelta');
+    print('🎯 Focal point: $focalPoint');
+
+    _applyTransformation(remoteDelta, 1.0, focalPoint);
   }
 
   Future<void> _pickImage() async {
     try {
       final ImagePicker picker = ImagePicker();
       final XFile? pickedFile =
-          await picker.pickImage(source: ImageSource.gallery);
+      await picker.pickImage(source: ImageSource.gallery);
 
-      if (pickedFile != null) {
-        setState(() {
-          _isLoadingImage = true;
-          _loadProgress = 0.0;
-        });
+      if (pickedFile == null) return;
 
-        // Guardamos conexiones actuales por si se reinicia el estado
-        final currentConnections = Map<String, WebSocket>.from(_connections);
+      setState(() {
+        _isLoadingImage = true;
+        _loadProgress = 0.0;
+      });
 
-        final Uint8List imageBytes = await pickedFile.readAsBytes();
+      // Guardamos conexiones por si se reinicia el estado
+      final currentConnections = Map<String, WebSocket>.from(_connections);
 
-        // Cargar imagen con progreso real
-        final img.Image? decoded = await ChunkedImageLoader.decodeWithProgress(
-          imageBytes,
-          (progress) {
-            setState(() {
-              _loadProgress = progress;
-            });
-          },
-        );
+      final Uint8List imageBytes = await pickedFile.readAsBytes();
 
-        if (decoded == null)
-          throw Exception('No se pudo decodificar la imagen.');
+      // 🔁 Simulación progresiva de lectura de bytes
+      const int chunkSize = 64 * 1024;
+      final int totalBytes = imageBytes.length;
+      int loaded = 0;
+      final buffer = BytesBuilder();
 
-        final ui.Image uiImage =
-            await ChunkedImageLoader.convertToUiImage(decoded);
-
-        if (!mounted) return;
+      while (loaded < totalBytes) {
+        final end = (loaded + chunkSize).clamp(0, totalBytes);
+        buffer.add(imageBytes.sublist(loaded, end));
+        loaded = end;
 
         setState(() {
-          _imageBytes = imageBytes;
-          _uiImage = uiImage;
-          _hasImage = true;
-          _isSharing = false;
-          _isLoadingImage = false;
-          _isGestureSyncEnabled = true;
-
-          if (_connections.isEmpty) {
-            _connections = currentConnections;
-          }
-
-          _transformationController = TransformationController();
+          _loadProgress = (loaded / totalBytes).clamp(0.0, 0.99);
         });
 
-        _updateImageView();
-        _broadcastReadyState();
-        _checkAllDevicesReady();
-
-        // Logs de estado
-        print('✅ Imagen cargada correctamente');
-        print('📡 Dispositivos conectados: ${_connections.length}');
-        print('📎 _hasImage: $_hasImage');
-        print('📷 Tamaño imagen: ${_uiImage?.width}x${_uiImage?.height}');
+        await Future.delayed(const Duration(milliseconds: 8));
       }
+
+      final Uint8List completeBytes = buffer.toBytes();
+
+      // ✅ Decode y conversión
+      final img.Image? decodedImage = img.decodeImage(completeBytes);
+
+      if (decodedImage == null) throw Exception('No se pudo decodificar.');
+
+      final ui.Image uiImage =
+      await ChunkedImageLoader.convertToUiImage(decodedImage);
+
+      if (!mounted) return;
+
+      setState(() {
+        _imageBytes = completeBytes;
+        _uiImage = uiImage;
+        _hasImage = true;
+        _isSharing = false;
+        _isLoadingImage = false;
+        _isGestureSyncEnabled = true;
+
+        if (_connections.isEmpty) {
+          _connections = currentConnections;
+        }
+
+        _transformationController = TransformationController();
+      });
+
+      _updateImageView();
+      _broadcastReadyState();
+      _checkAllDevicesReady();
+
+      print('✅ Imagen cargada correctamente');
+      print('📷 Tamaño imagen: ${_uiImage?.width}x${_uiImage?.height}');
     } catch (e, stackTrace) {
       print('❌ Error al cargar la imagen: $e');
       print('Stack trace: $stackTrace');
@@ -1095,7 +1143,9 @@ class WifiSyncHomeState extends State<WifiSyncHome> {
         // Enviar un ping para verificar la conexión
         connection.add(json.encode({
           'type': 'ping',
-          'timestamp': DateTime.now().millisecondsSinceEpoch,
+          'timestamp': DateTime
+              .now()
+              .millisecondsSinceEpoch,
         }));
       } catch (e) {
         print('Conexión perdida con dispositivo $id: $e');
@@ -1108,14 +1158,14 @@ class WifiSyncHomeState extends State<WifiSyncHome> {
     if (_uiImage != null && !_isReadyToShare && _isGestureSyncEnabled) {
       print('📦 Interacción detectada: delta=${details.focalPointDelta}');
 
-      final delta = details.focalPointDelta;
+      final scale = _transformationController.value.getMaxScaleOnAxis();
+      final deltaInImage = details.focalPointDelta /
+          _transformationController.value.getMaxScaleOnAxis();
       final focalPoint = details.localFocalPoint;
 
-      // ⚠️ Forzar transformación manualmente (modo prueba)
-      _applyTransformation(delta, 1.0, focalPoint);
+      _applyTransformation(deltaInImage, 1.0, focalPoint);
 
-      // También puedes comentar esta línea si no quieres broadcasting aún
-      _broadcastGesture(delta, 1.0, focalPoint);
+      _broadcastGesture(deltaInImage, scale, focalPoint);
     }
   }
 
@@ -1133,7 +1183,9 @@ class WifiSyncHomeState extends State<WifiSyncHome> {
       'focalPointX': focalPoint.dx,
       'focalPointY': focalPoint.dy,
       'senderId': myDevice?.id,
-      'timestamp': DateTime.now().millisecondsSinceEpoch,
+      'timestamp': DateTime
+          .now()
+          .millisecondsSinceEpoch,
     };
 
     // Si somos un dispositivo Linked, enviamos solo al Leader
@@ -1166,6 +1218,22 @@ class WifiSyncHomeState extends State<WifiSyncHome> {
     });
   }
 
+  void _resetSession() {
+    setState(() {
+      _uiImage = null;
+      _imageBytes = null;
+      _hasImage = false;
+      _isSharing = false;
+      _isReadyToShare = false;
+      _isFreeSliding = true;
+      _isGestureSyncEnabled = false;
+      _isQRCodeScanned = false;
+      _isLeader = null;
+      _initialViewport = null;
+      _activeLinkedDeviceId = null;
+    });
+  }
+
   void _addDebugInfo(String info) {
     print(info);
   }
@@ -1182,116 +1250,146 @@ class WifiSyncHomeState extends State<WifiSyncHome> {
       debugShowCheckedModeBanner: false,
       home: _isLeader == null
           ? ChooseroleScreen(
-              isLeader:
-                  _onRoleSelected, // Pasamos la función para recibir la elección
-            )
+        isLeader:
+        _onRoleSelected, // Pasamos la función para recibir la elección
+      )
           : Scaffold(
-              backgroundColor: Colors.white,
-              body: SafeArea(
-                child: Stack(
-                  children: [
-                    Center(child: _buildImageView()),
-                    // Solo mostramos el botón de retroceso sin AppBar
-                    Positioned(
-                      top: 35,
-                      left: 20,
-                      child: Container(
-                        height: 32,
-                        width: 32,
-                        decoration: BoxDecoration(
-                          color: Colors.white,
-                          shape: BoxShape.circle,
-                        ),
-                        child: Center(
-                          child: IconButton(
-                            padding: EdgeInsets.zero,
-                            constraints: BoxConstraints(),
-                            icon: Icon(
-                              Icons.arrow_back,
-                            ),
-                            onPressed: () {
-                              setState(() {
-                                _isLeader = null;
-                              });
-                            },
-                          ),
-                        ),
+        backgroundColor: Colors.white,
+        body: SafeArea(
+          child: Stack(
+            children: [
+              Center(child: _buildImageView()),
+              // Solo mostramos el botón de retroceso sin AppBar
+              Positioned(
+                top: 35,
+                left: 20,
+                child: Container(
+                  height: 32,
+                  width: 32,
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    shape: BoxShape.circle,
+                  ),
+                  child: Center(
+                    child: IconButton(
+                      padding: EdgeInsets.zero,
+                      constraints: BoxConstraints(),
+                      icon: Icon(
+                        Icons.arrow_back,
                       ),
+                      onPressed: () {
+                        setState(() {
+                          _isLeader = null;
+                        });
+                      },
                     ),
-                  ],
+                  ),
                 ),
               ),
-              floatingActionButton: (_isLeader! ||
-                      (!_isLeader! && _isQRCodeScanned))
-                  ? SpeedDial(
-                      backgroundColor: Color(0xFF0067FF),
-                      foregroundColor: Colors.white,
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(16),
+            ],
+          ),
+        ),
+        floatingActionButton: (_isLeader! ||
+            (!_isLeader! && _isQRCodeScanned))
+            ? SpeedDial(
+          backgroundColor: Color(0xFF0067FF),
+          foregroundColor: Colors.white,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(16),
+          ),
+          animatedIcon: AnimatedIcons.menu_close,
+          overlayColor: Colors.black,
+          overlayOpacity: 0.5,
+          children: [
+            if (_isLeader!) ...[
+              if (_isSharing)
+                SpeedDialChild(
+                  child: Icon(Icons.logout),
+                  label: 'Cerrar room',
+                  onTap: () {
+                    // Cierra conexiones
+                    _connections.forEach((id, socket) {
+                      try {
+                        socket.add(
+                            json.encode({'type': 'stop_session'}));
+                        socket.close();
+                      } catch (e) {
+                        print(
+                            'Error al cerrar conexión con $id: $e');
+                      }
+                    });
+                    _connections.clear();
+                    _connectedDevicesReadyState.clear();
+
+                    _resetSession();
+
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(
+                        content: Text("Sesión finalizada"),
+                        duration: Duration(seconds: 2),
                       ),
-                      animatedIcon: AnimatedIcons.menu_close,
-                      overlayColor: Colors.black,
-                      overlayOpacity: 0.5,
-                      children: [
-                        if (_isLeader!) ...[
-                          if (_hasImage)
-                            SpeedDialChild(
-                              child: Icon(_isReadyToShare
-                                  ? Icons.share
-                                  : Icons.share_outlined),
-                              label: 'Match',
-                              onTap: () => _toggleReadyToShare(),
-                            ),
-                          if (_hasImage)
-                            SpeedDialChild(
-                              child: Icon(Icons.qr_code),
-                              label: 'View QR',
-                              onTap: () => _showQRCodeDialog(),
-                            ),
-                          SpeedDialChild(
-                            child: Icon(Icons.add_photo_alternate),
-                            label: 'Add image',
-                            onTap: () => _pickImage(),
-                          ),
-                        ] else ...[
-                          SpeedDialChild(
-                            child: Icon(Icons.logout),
-                            label: 'Desconectar',
-                            onTap: () {
-                              // Cierra conexiones
-                              _connections.forEach((id, socket) {
-                                try {
-                                  socket.close();
-                                } catch (e) {
-                                  print('Error al cerrar conexión con $id: $e');
-                                }
-                              });
+                    );
+                  },
+                ),
+              if (_hasImage)
+                SpeedDialChild(
+                  child: Icon(_isReadyToShare
+                      ? Icons.share
+                      : Icons.share_outlined),
+                  label: 'Match',
+                  onTap: () => _toggleReadyToShare(),
+                ),
+              if (_hasImage)
+                SpeedDialChild(
+                  child: Icon(Icons.qr_code),
+                  label: 'View QR',
+                  onTap: () => _showQRCodeDialog(),
+                ),
+              SpeedDialChild(
+                child: Icon(Icons.add_photo_alternate),
+                label: 'Add image',
+                onTap: () => _pickImage(),
+              ),
+            ] else
+              ...[
+                SpeedDialChild(
+                  child: Icon(Icons.logout),
+                  label: 'Desconectar',
+                  onTap: () {
+                    // Cierra conexión del Linked
+                    _connections.forEach((id, socket) {
+                      try {
+                        socket.close();
+                      } catch (e) {
+                        print('Error al cerrar conexión con $id: $e');
+                      }
+                    });
 
-                              _connections.clear();
-                              _connectedDevicesReadyState.clear();
+                    _connections.clear();
+                    _connectedDevicesReadyState.clear();
 
-                              // Espera un frame antes de actualizar el UI
-                              Future.delayed(Duration(milliseconds: 100), () {
-                                if (mounted) {
-                                  setState(() {
-                                    _isQRCodeScanned = false;
-                                  });
-                                }
-                              });
+                    // Espera un frame antes de actualizar el UI
+                    Future.delayed(Duration(milliseconds: 100), () {
+                      if (mounted) {
+                        setState(() {
+                          _isQRCodeScanned = false;
+                        });
+                      }
+                    });
 
-                              ScaffoldMessenger.of(context).showSnackBar(
-                                SnackBar(
-                                  content: Text("Desconectado del room"),
-                                  duration: Duration(seconds: 2),
-                                ),
-                              );
-                            },
-                          ),
-                        ],
-                      ],
-                    )
-                  : null,
-            ),
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(
+                        content: Text("Desconectado del room"),
+                        duration: Duration(seconds: 2),
+                      ),
+                    );
+                  },
+                ),
+              ],
+          ],
+        )
+            : null,
+      ),
     );
   }
 
@@ -1369,8 +1467,14 @@ class WifiSyncHomeState extends State<WifiSyncHome> {
         onVerticalDragUpdate: _onPanDragUpdate,
         onVerticalDragEnd: _onPanDragEnd,
         child: Container(
-          width: MediaQuery.of(context).size.width,
-          height: MediaQuery.of(context).size.height,
+          width: MediaQuery
+              .of(context)
+              .size
+              .width,
+          height: MediaQuery
+              .of(context)
+              .size
+              .height,
           decoration: BoxDecoration(
             color: Color(0xFFFFA91F).withOpacity(0.7),
           ),
@@ -1409,8 +1513,14 @@ class WifiSyncHomeState extends State<WifiSyncHome> {
         !_isLeader! &&
         _isQRCodeScanned) {
       return Container(
-        width: MediaQuery.of(context).size.width,
-        height: MediaQuery.of(context).size.height,
+        width: MediaQuery
+            .of(context)
+            .size
+            .width,
+        height: MediaQuery
+            .of(context)
+            .size
+            .height,
         decoration: BoxDecoration(
           color: Color(0xFF0078FF).withOpacity(0.7),
         ),
@@ -1476,10 +1586,14 @@ class WifiSyncHomeState extends State<WifiSyncHome> {
                 painter: LazyImagePainter(
                   image: _uiImage!,
                   currentTransform: _transformationController.value,
-                  screenSize: MediaQuery.of(context).size,
+                  screenSize: MediaQuery
+                      .of(context)
+                      .size,
                   showHighlight: !_isFreeSliding,
                 ),
-                size: MediaQuery.of(context).size,
+                size: MediaQuery
+                    .of(context)
+                    .size,
               );
             },
           ),
@@ -1611,7 +1725,9 @@ class WifiSyncHomeState extends State<WifiSyncHome> {
     if (!_isReadyToShare || _isFreeSliding) return;
 
     print(
-        'Finalizando deslizamiento en rol: ${_isLeader! ? 'leader' : 'linked'}');
+        'Finalizando deslizamiento en rol: ${_isLeader!
+            ? 'leader'
+            : 'linked'}');
     _resetSwipeState();
   }
 
@@ -1732,10 +1848,12 @@ class LazyImagePainter extends CustomPainter {
     double viewportWidth = screenSize.width / scale;
     double viewportHeight = screenSize.height / scale;
 
-    Rect srcRect =
-        Rect.fromLTWH(viewportX, viewportY, viewportWidth, viewportHeight)
-            .intersect(Rect.fromLTWH(
-                0, 0, image.width.toDouble(), image.height.toDouble()));
+    Rect srcRect = Rect.fromLTWH(
+      viewportX,
+      viewportY,
+      viewportWidth,
+      viewportHeight,
+    );
 
     final dstRect = Offset.zero & screenSize;
 
