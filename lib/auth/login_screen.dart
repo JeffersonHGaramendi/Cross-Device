@@ -16,6 +16,7 @@ class LoginScreen extends StatefulWidget {
 class _LoginState extends State<LoginScreen> {
   final _email = TextEditingController();
   final _password = TextEditingController();
+  bool _obscurePassword = true;
 
   signUp(BuildContext context) => Navigator.push(
         context,
@@ -95,11 +96,24 @@ class _LoginState extends State<LoginScreen> {
               height: 56,
               child: TextField(
                 controller: _password,
-                obscureText: true,
+                obscureText: _obscurePassword,
                 decoration: InputDecoration(
-                    border: OutlineInputBorder(),
-                    hintText: 'Enter Password',
-                    labelText: 'Password'),
+                  border: OutlineInputBorder(),
+                  hintText: 'Enter Password',
+                  labelText: 'Password',
+                  suffixIcon: IconButton(
+                    icon: Icon(
+                      _obscurePassword
+                          ? Icons.visibility_off
+                          : Icons.visibility,
+                    ),
+                    onPressed: () {
+                      setState(() {
+                        _obscurePassword = !_obscurePassword;
+                      });
+                    },
+                  ),
+                ),
               ),
             ),
             Flexible(
