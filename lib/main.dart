@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:developer';
 import 'dart:typed_data';
 import 'dart:ui' as ui;
+import 'dart:math' as math;
 import 'package:image/image.dart' as img;
 
 import 'package:crossdevice/auth/login_screen.dart';
@@ -483,13 +484,13 @@ class WifiSyncHomeState extends State<WifiSyncHome> {
     }
 
     // ⬆️ Linked se posiciona debajo del Leader
-    else if (_direction == 'down') {
+    else if (_direction == 'up') {
       newY = leaderViewport.bottom;
       newX = leaderViewport.left + (leaderSlideX - linkedSlideX!);
     }
 
     // ⬇️ Linked se posiciona encima del Leader
-    else if (_direction == 'up') {
+    else if (_direction == 'down') {
       newY = leaderViewport.top - linkedHeightInImage;
       newX = leaderViewport.left + (leaderSlideX - linkedSlideX!);
     } else {
@@ -1736,57 +1737,49 @@ class WifiSyncHomeState extends State<WifiSyncHome> {
   }
 
   void _onPanDragUpdate(DragUpdateDetails details) {
-    if (_isReadyToShare) {
-      final double currentX = details.localPosition.dx;
-      final double currentY = details.localPosition.dy;
-      final double dragDistanceX = currentX - _startHorizontalDragX;
-      final double dragDistanceY = currentY - _startVerticalDragY;
+    final double currentX = details.localPosition.dx;
+    final double currentY = details.localPosition.dy;
+    final double dragDistanceX = currentX - _startHorizontalDragX;
+    final double dragDistanceY = currentY - _startVerticalDragY;
 
-      if (dragDistanceX.abs() > dragDistanceY.abs()) {
-        _direction = dragDistanceX < 0 ? 'left' : 'right';
-      } else {
-        _direction = dragDistanceY < 0 ? 'up' : 'down';
-      }
-
-      print('➡️ Leader detectó dirección: $_direction');
-
-      setState(() {
-        _isLocalSwiping = true;
-      });
-
-      _broadcastSimultaneousSwipe(true);
-
-      _swipeTimeoutTimer?.cancel();
-      _swipeTimeoutTimer = Timer(swipeTimeout, () {
-        setState(() {
-          _isLocalSwiping = false;
-        });
-        _broadcastSimultaneousSwipe(false);
-      });
-
-      return;
+    const double directionThreshold = 12.0;
+    if (dragDistanceX.abs() < directionThreshold &&
+        dragDistanceY.abs() < directionThreshold) {
+      return; // Ignorar movimientos muy pequeños
     }
 
-    double currentX = details.localPosition.dx;
-    double dragDistanceX = currentX - _startHorizontalDragX;
-    double currentY = details.localPosition.dy;
-    double dragDistanceY = currentY - _startVerticalDragY;
+    // Calcular el ángulo para obtener dirección cardinal
+    final double angle = math.atan2(dragDistanceY, dragDistanceX);
+    String newDirection;
+
+    if (angle >= -math.pi / 4 && angle <= math.pi / 4) {
+      newDirection = 'right';
+    } else if (angle > math.pi / 4 && angle < 3 * math.pi / 4) {
+      newDirection = 'down';
+    } else if (angle < -math.pi / 4 && angle > -3 * math.pi / 4) {
+      newDirection = 'up';
+    } else {
+      newDirection = 'left';
+    }
+
+    // Solo si cambia la dirección, actualiza
+    if (_direction != newDirection) {
+      _direction = newDirection;
+      print('➡️ Dirección detectada: $_direction');
+    }
 
     setState(() {
-      _isSwipingLeft = dragDistanceX < -20;
-      _isSwipingRight = dragDistanceX > 20;
-      _isSwipingDown = dragDistanceY < 20;
-      _isSwipingUp = dragDistanceY > -20;
+      _isLocalSwiping = true;
     });
 
-    if (_isSwipingLeft || _isSwipingRight) {
-      _direction = _isSwipingLeft ? 'left' : 'right';
-      _broadcastSwipeGesture(_isSwipingLeft ? 'left' : 'right');
-    } else if (_isSwipingDown || _isSwipingUp) {
-      _direction = _isSwipingDown ? 'down' : 'up';
-      _broadcastSwipeGesture(_isSwipingDown ? 'down' : 'up');
+    // Broadcast
+    if (_isReadyToShare) {
+      _broadcastSimultaneousSwipe(true);
+    } else {
+      _broadcastSwipeGesture(_direction!);
     }
 
+    // Reiniciar timeout
     _swipeTimeoutTimer?.cancel();
     _swipeTimeoutTimer = Timer(swipeTimeout, () {
       setState(() {
