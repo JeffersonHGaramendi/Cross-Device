@@ -517,6 +517,57 @@ class WifiSyncHomeState extends State<WifiSyncHome> {
     log("✅ Viewport reposicionado en Linked.");
   }
 
+  void _positionViewportFromLinkedToLeader(
+    Rect linkedViewport,
+    double linkedSlideY,
+    double linkedSlideX,
+    double linkedScale,
+  ) {
+    if (_uiImage == null || leaderSlideY == null || leaderSlideX == null) {
+      log('❌ Datos insuficientes para calcular el viewport del Leader');
+      return;
+    }
+
+    final Size leaderScreenSize = MediaQuery.of(context).size;
+    final double scale = linkedScale;
+
+    final double leaderWidthInImage = leaderScreenSize.width / scale;
+    final double leaderHeightInImage = leaderScreenSize.height / scale;
+
+    double newX = linkedViewport.left;
+    double newY = linkedViewport.top;
+
+    if (_direction == 'right') {
+      newX = linkedViewport.right;
+      newY = linkedViewport.top + (linkedSlideY - leaderSlideY!);
+    } else if (_direction == 'left') {
+      newX = linkedViewport.left - leaderWidthInImage;
+      newY = linkedViewport.top + (linkedSlideY - leaderSlideY!);
+    } else if (_direction == 'up') {
+      newY = linkedViewport.top - leaderHeightInImage;
+      newX = linkedViewport.left + (linkedSlideX - leaderSlideX!);
+    } else if (_direction == 'down') {
+      newY = linkedViewport.bottom;
+      newX = linkedViewport.left + (linkedSlideX - leaderSlideX!);
+    } else {
+      print("❌ Dirección desconocida: $_direction");
+      return;
+    }
+
+    final Matrix4 leaderTransform = Matrix4.identity()
+      ..scale(scale)
+      ..translate(-newX, -newY);
+
+    log("📥 Viewport reposicionado en Leader (desde Linked)");
+    log("  newX: $newX, newY: $newY");
+
+    setState(() {
+      _transformationController.value = leaderTransform;
+      _isReadyToShare = false;
+      _isFreeSliding = true;
+    });
+  }
+
   void _broadcastReadyState() {
     final readyStateData = {
       'type': 'ready_state',
@@ -620,40 +671,67 @@ class WifiSyncHomeState extends State<WifiSyncHome> {
             );
           }
           break;
-        case 'relative_gesture':
-          if (_isSharing && _uiImage != null) {
-            final senderId = messageData['senderId'];
-            if (senderId == myDevice?.id) return;
+        case 'absolute_displacement':
+          if (_uiImage != null && _isSharing) {
+            final data = messageData['leaderViewport'];
+            final double scale = (messageData['scale'] as num).toDouble();
+            final Rect leaderViewport = Rect.fromLTWH(
+              (data['left'] as num).toDouble(),
+              (data['top'] as num).toDouble(),
+              (data['width'] as num).toDouble(),
+              (data['height'] as num).toDouble(),
+            );
 
-            final double dxPercent =
-                (messageData['normalizedDeltaX'] as num).toDouble();
-            final double dyPercent =
-                (messageData['normalizedDeltaY'] as num).toDouble();
+            _direction = messageData['direction'];
+            final String? senderId = messageData['senderId'];
+            final String initiatorRole =
+                messageData['initiatorRole'] ?? 'leader';
 
-            final Rect? localViewport = _getLeaderViewport();
-            if (localViewport == null) return;
+            // Extraer coordenadas según quién originó el gesto
+            if (initiatorRole == 'linked') {
+              linkedSlideX = (messageData['linkedSlideX'] as num?)?.toDouble();
+              linkedSlideY = (messageData['linkedSlideY'] as num?)?.toDouble();
+            } else {
+              leaderSlideX = (messageData['leaderSlideX'] as num?)?.toDouble();
+              leaderSlideY = (messageData['leaderSlideY'] as num?)?.toDouble();
+            }
 
-            final double dx = double.parse(
-                (dxPercent * localViewport.width).toStringAsFixed(5));
-            final double dy = double.parse(
-                (dyPercent * localViewport.height).toStringAsFixed(5));
+            // ✅ Aplicar desplazamiento si NO soy el originador
+            if (senderId != myDevice?.id) {
+              if (initiatorRole == 'linked') {
+                if (linkedSlideX != null && linkedSlideY != null) {
+                  if (_isLeader!) {
+                    _positionViewportFromLinkedToLeader(
+                      leaderViewport,
+                      linkedSlideY!,
+                      linkedSlideX!,
+                      scale,
+                    );
+                  } else {
+                    _positionLinkedViewport(
+                      leaderViewport,
+                      linkedSlideY!,
+                      linkedSlideX!,
+                      scale,
+                    );
+                  }
+                }
+              } else if (initiatorRole == 'leader') {
+                if (leaderSlideX != null && leaderSlideY != null) {
+                  _positionLinkedViewport(
+                    leaderViewport,
+                    leaderSlideY!,
+                    leaderSlideX!,
+                    scale,
+                  );
+                }
+              }
+            }
 
-            final Matrix4 newTransform =
-                Matrix4.copy(_transformationController.value)
-                  ..translate(dx, dy);
-
-            setState(() {
-              _transformationController.value = newTransform;
-            });
-
-            print('📥 Gesto relativo aplicado: dx=$dx, dy=$dy');
-
-            // ✅ REENVIAR A OTROS DISPOSITIVOS (si soy Leader)
+            // ✅ Si soy Leader y el gesto vino de un Linked, reenviarlo
             if (_isLeader! && senderId != myDevice?.id) {
               final forwardedData = {
                 ...messageData,
-                'type': 'relative_gesture',
-                'senderId': senderId,
                 'forwarded': true,
               };
 
@@ -661,6 +739,7 @@ class WifiSyncHomeState extends State<WifiSyncHome> {
                 if (entry.key != senderId) {
                   try {
                     entry.value.add(json.encode(forwardedData));
+                    print('🔁 Forwarded absolute gesture to ${entry.key}');
                   } catch (e) {
                     print('Error reenviando gesto a ${entry.key}: $e');
                   }
@@ -987,13 +1066,6 @@ class WifiSyncHomeState extends State<WifiSyncHome> {
     _broadcastSharingStateUpdate();
   }
 
-  void _handleStopSharing() {
-    setState(() {
-      _isSharing = false;
-    });
-    print("El dispositivo remoto dejó de compartir la imagen");
-  }
-
   void _handleReadyState(String connectionId, bool isReady, bool hasImage) {
     setState(() {
       _connectedDevicesReadyState[connectionId] = isReady;
@@ -1043,10 +1115,6 @@ class WifiSyncHomeState extends State<WifiSyncHome> {
 
     final double remoteDeltaX = (gestureData['deltaX'] as num).toDouble();
     final double remoteDeltaY = (gestureData['deltaY'] as num).toDouble();
-    final double remoteScale = (gestureData['scale'] as num).toDouble();
-
-    final double localScale =
-        _transformationController.value.getMaxScaleOnAxis();
 
     final Size localSize = MediaQuery.of(context).size;
     final double remoteWidth =
@@ -1187,109 +1255,65 @@ class WifiSyncHomeState extends State<WifiSyncHome> {
     }
   }
 
-  Future<ui.Image> _loadImage(Uint8List imageBytes) async {
-    _verifyConnections();
-    final Completer<ui.Image> completer = Completer();
-    ui.decodeImageFromList(imageBytes, (ui.Image img) {
-      print("Imagen cargada: ${img.width}x${img.height}");
-      completer.complete(img);
-    });
-    return completer.future;
-  }
-
-  void _verifyConnections() {
-    _connections.forEach((id, connection) {
-      try {
-        // Enviar un ping para verificar la conexión
-        connection.add(json.encode({
-          'type': 'ping',
-          'timestamp': DateTime.now().millisecondsSinceEpoch,
-        }));
-      } catch (e) {
-        print('Conexión perdida con dispositivo $id: $e');
-        _handleDisconnection(id);
-      }
-    });
-  }
+  double? _lastSentViewportTime;
 
   void _onInteractionUpdate(ScaleUpdateDetails details) {
     if (_uiImage != null && !_isReadyToShare && _isGestureSyncEnabled) {
-      final scale = _transformationController.value.getMaxScaleOnAxis();
-      final delta = details.focalPointDelta;
+      final Rect? currentViewport = _getLeaderViewport();
+      if (currentViewport == null) return;
 
-      final Rect? senderViewport = _getLeaderViewport();
-      if (senderViewport == null) return;
-
-      final double normalizedDeltaX = delta.dx / senderViewport.width;
-      final double normalizedDeltaY = delta.dy / senderViewport.height;
-
-      if (normalizedDeltaX.abs() < 0.001 && normalizedDeltaY.abs() < 0.001) {
-        return;
-      }
-
-      final Offset deltaInImage = delta / scale;
+      final double scale = _transformationController.value.getMaxScaleOnAxis();
       final Offset focalPoint = details.localFocalPoint;
 
-      // Aplica localmente
+      // 1. Aplicar desplazamiento local para movimiento inmediato
+      final Offset delta = details.focalPointDelta;
+      final Offset deltaInImage = delta / scale;
       _applyTransformation(deltaInImage, 1.0, focalPoint);
 
-      // Enviar proporción del delta
-      _broadcastRelativeGesture(normalizedDeltaX, normalizedDeltaY);
-    }
-  }
-
-  void _broadcastRelativeGesture(
-      double normalizedDeltaX, double normalizedDeltaY) {
-    if (!_isSharing || _uiImage == null) return;
-
-    final gestureData = {
-      'type': 'relative_gesture',
-      'normalizedDeltaX': normalizedDeltaX,
-      'normalizedDeltaY': normalizedDeltaY,
-      'senderId': myDevice?.id,
-    };
-
-    if (_isLeader!) {
-      _forwardGestureToAllDevices(gestureData, myDevice?.id ?? 'unknown');
-    } else {
-      for (var connection in _connections.values) {
-        connection.add(json.encode(gestureData));
+      // 2. Control de frecuencia de envío para evitar saltos por cada pixel
+      final now = DateTime.now().millisecondsSinceEpoch.toDouble();
+      if (_lastSentViewportTime == null || now - _lastSentViewportTime! > 30) {
+        final Rect? leaderViewport = _getLeaderViewport();
+        if (leaderViewport != null && _direction != null) {
+          _broadcastAbsoluteDisplacement(leaderViewport, scale);
+          _lastSentViewportTime = now;
+        }
       }
     }
   }
 
-  void _broadcastGesture(Offset delta, double scale, Offset focalPoint) {
-    if (!_isSharing) return;
+  void _broadcastAbsoluteDisplacement(Rect leaderViewport, double scale) {
+    if ((_isLeader! && (leaderSlideX == null || leaderSlideY == null)) ||
+        (!_isLeader! && (linkedSlideX == null || linkedSlideY == null)) ||
+        _direction == null) {
+      print('❌ No se puede enviar desplazamiento: coordenadas nulas');
+      return;
+    }
 
-    print(
-        '📤 Enviando gesto desde ${myDevice?.id}: delta=$delta, scale=$scale');
-
-    final Size screenSize = MediaQuery.of(context).size;
-
-    final gestureData = {
-      'type': 'sync_gesture',
-      'deltaX': delta.dx,
-      'deltaY': delta.dy,
+    final message = {
+      'type': 'absolute_displacement',
+      'leaderViewport': {
+        'left': leaderViewport.left,
+        'top': leaderViewport.top,
+        'width': leaderViewport.width,
+        'height': leaderViewport.height,
+      },
       'scale': scale,
-      'focalPointX': focalPoint.dx,
-      'focalPointY': focalPoint.dy,
-      'screenWidth': screenSize.width,
-      'screenHeight': screenSize.height,
+      'direction': _direction,
       'senderId': myDevice?.id,
-      'timestamp': DateTime.now().millisecondsSinceEpoch,
+      'initiatorRole': _isLeader! ? 'leader' : 'linked',
+      if (_isLeader!) ...{
+        'leaderSlideX': leaderSlideX,
+        'leaderSlideY': leaderSlideY,
+      },
+      if (!_isLeader!) ...{
+        'linkedSlideX': linkedSlideX,
+        'linkedSlideY': linkedSlideY,
+      },
     };
 
-    // Si somos un dispositivo Linked, enviamos solo al Leader
-    if (!_isLeader!) {
-      print('Dispositivo Linked enviando gesto al Leader');
-      for (var connection in _connections.values) {
-        connection.add(json.encode(gestureData));
-      }
-    } else {
-      // Si somos el Leader, enviamos a todos
-      print('Leader enviando gesto a todos los dispositivos');
-      _forwardGestureToAllDevices(
-          gestureData, user.currentUser?.email ?? 'unknown');
+    for (var conn in _connections.values) {
+      conn.add(json.encode(message));
     }
   }
 
