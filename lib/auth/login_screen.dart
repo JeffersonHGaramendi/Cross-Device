@@ -17,22 +17,116 @@ class _LoginState extends State<LoginScreen> {
   final _email = TextEditingController();
   final _password = TextEditingController();
   bool _obscurePassword = true;
+  bool _isLoading = false;
+  String _errorMessage = '';
 
   signUp(BuildContext context) => Navigator.push(
         context,
         MaterialPageRoute(builder: (context) => SignupScreen()),
       );
 
-  homeScreen(BuildContext context) => Navigator.push(
+  homeScreen(BuildContext context) => Navigator.pushReplacement(
         context,
         MaterialPageRoute(builder: (context) => WifiSyncHome()),
       );
 
+  // Función para mostrar mensajes de error personalizados
+  String _getErrorMessage(String errorCode) {
+    switch (errorCode) {
+      case 'user-not-found':
+        return 'No existe una cuenta con este correo electrónico.';
+      case 'wrong-password':
+        return 'La contraseña es incorrecta.';
+      case 'invalid-email':
+        return 'El formato del correo electrónico no es válido.';
+      case 'user-disabled':
+        return 'Esta cuenta ha sido deshabilitada.';
+      case 'too-many-requests':
+        return 'Demasiados intentos fallidos. Intenta más tarde.';
+      case 'invalid-credential':
+        return 'Las credenciales proporcionadas son incorrectas.';
+      case 'network-request-failed':
+        return 'Error de conexión. Verifica tu internet.';
+      case 'weak-password':
+        return 'La contraseña es muy débil.';
+      default:
+        return 'Ha ocurrido un error. Intenta nuevamente.';
+    }
+  }
+
+  // Función para validar el formato del email
+  bool _isValidEmail(String email) {
+    return RegExp(r'^[\w-\.]+@([\w-]+\.)+[\w-]{2,4}$').hasMatch(email);
+  }
+
   signIn() async {
-    await FirebaseAuth.instance.signInWithEmailAndPassword(
-        email: _email.text, password: _password.text);
-    log('User logged');
-    homeScreen(context);
+    // Limpiar mensaje de error anterior
+    setState(() {
+      _errorMessage = '';
+      _isLoading = true;
+    });
+
+    // Validaciones básicas
+    if (_email.text.trim().isEmpty) {
+      setState(() {
+        _errorMessage = 'Por favor ingrese su correo electrónico.';
+        _isLoading = false;
+      });
+      return;
+    }
+
+    if (!_isValidEmail(_email.text.trim())) {
+      setState(() {
+        _errorMessage = 'Por favor ingrese un correo electrónico válido.';
+        _isLoading = false;
+      });
+      return;
+    }
+
+    if (_password.text.isEmpty) {
+      setState(() {
+        _errorMessage = 'Por favor ingrese su contraseña.';
+        _isLoading = false;
+      });
+      return;
+    }
+
+    if (_password.text.length < 6) {
+      setState(() {
+        _errorMessage = 'La contraseña debe tener al menos 6 caracteres.';
+        _isLoading = false;
+      });
+      return;
+    }
+
+    try {
+      await FirebaseAuth.instance.signInWithEmailAndPassword(
+        email: _email.text.trim(),
+        password: _password.text,
+      );
+
+      log('User logged successfully');
+
+      // Limpiar campos y navegar
+      _email.clear();
+      _password.clear();
+
+      if (mounted) {
+        homeScreen(context);
+      }
+    } on FirebaseAuthException catch (e) {
+      log('Firebase Auth Error: ${e.code}');
+      setState(() {
+        _errorMessage = _getErrorMessage(e.code);
+        _isLoading = false;
+      });
+    } catch (e) {
+      log('General Error: $e');
+      setState(() {
+        _errorMessage = 'Ha ocurrido un error inesperado. Intenta nuevamente.';
+        _isLoading = false;
+      });
+    }
   }
 
   @override
@@ -68,54 +162,172 @@ class _LoginState extends State<LoginScreen> {
             Flexible(
               child: SizedBox(height: 24),
             ),
-            SizedBox(
-              width: 320,
-              height: 33,
-              child: Text("Login",
-                  style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold)),
-            ),
-            Flexible(
-              child: SizedBox(height: 24),
-            ),
-            SizedBox(
-              width: 320,
-              height: 56,
-              child: TextField(
-                controller: _email,
-                decoration: InputDecoration(
-                    border: OutlineInputBorder(),
-                    hintText: 'Enter Email',
-                    labelText: 'Email'),
+            // Title
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 20),
+              child: Container(
+                width: double.infinity,
+                constraints: BoxConstraints(maxWidth: 320),
+                child: Text("Login",
+                    style:
+                        TextStyle(fontSize: 24, fontWeight: FontWeight.bold)),
               ),
             ),
             Flexible(
               child: SizedBox(height: 24),
             ),
-            SizedBox(
-              width: 320,
-              height: 56,
-              child: TextField(
-                controller: _password,
-                obscureText: _obscurePassword,
-                decoration: InputDecoration(
-                  border: OutlineInputBorder(),
-                  hintText: 'Enter Password',
-                  labelText: 'Password',
-                  suffixIcon: IconButton(
-                    icon: Icon(
-                      _obscurePassword
-                          ? Icons.visibility_off
-                          : Icons.visibility,
+            // Email Input
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 20),
+              child: Container(
+                width: double.infinity,
+                constraints: BoxConstraints(maxWidth: 320),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    SizedBox(
+                      height: 56,
+                      child: TextField(
+                        controller: _email,
+                        keyboardType: TextInputType.emailAddress,
+                        autocorrect: false,
+                        decoration: InputDecoration(
+                          border: OutlineInputBorder(),
+                          hintText: 'Enter Email',
+                          labelText: 'Email',
+                          contentPadding: EdgeInsets.symmetric(
+                              horizontal: 16, vertical: 16),
+                        ),
+                      ),
                     ),
-                    onPressed: () {
-                      setState(() {
-                        _obscurePassword = !_obscurePassword;
-                      });
-                    },
-                  ),
+                    // Mensaje de error específico para email
+                    if (_errorMessage.isNotEmpty &&
+                        (_errorMessage.contains('correo') ||
+                            _errorMessage.contains('email')))
+                      Padding(
+                        padding: const EdgeInsets.only(top: 8, left: 12),
+                        child: Row(
+                          children: [
+                            Icon(Icons.error_outline,
+                                color: Colors.red.shade700, size: 16),
+                            SizedBox(width: 4),
+                            Expanded(
+                              child: Text(
+                                _errorMessage,
+                                style: TextStyle(
+                                  color: Colors.red.shade700,
+                                  fontSize: 12,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                  ],
                 ),
               ),
             ),
+            Flexible(
+              child: SizedBox(height: 24),
+            ),
+            // Password Input
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 20),
+              child: Container(
+                width: double.infinity,
+                constraints: BoxConstraints(maxWidth: 320),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    SizedBox(
+                      height: 56,
+                      child: TextField(
+                        controller: _password,
+                        obscureText: _obscurePassword,
+                        decoration: InputDecoration(
+                          border: OutlineInputBorder(),
+                          hintText: 'Enter Password',
+                          labelText: 'Password',
+                          contentPadding: EdgeInsets.symmetric(
+                              horizontal: 16, vertical: 16),
+                          suffixIcon: IconButton(
+                            icon: Icon(
+                              _obscurePassword
+                                  ? Icons.visibility_off
+                                  : Icons.visibility,
+                            ),
+                            onPressed: () {
+                              setState(() {
+                                _obscurePassword = !_obscurePassword;
+                              });
+                            },
+                          ),
+                        ),
+                      ),
+                    ),
+                    // Mensaje de error específico para contraseña
+                    if (_errorMessage.isNotEmpty &&
+                        _errorMessage.contains('contraseña'))
+                      Padding(
+                        padding: const EdgeInsets.only(top: 8, left: 12),
+                        child: Row(
+                          children: [
+                            Icon(Icons.error_outline,
+                                color: Colors.red.shade700, size: 16),
+                            SizedBox(width: 4),
+                            Expanded(
+                              child: Text(
+                                _errorMessage,
+                                style: TextStyle(
+                                  color: Colors.red.shade700,
+                                  fontSize: 12,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+            ),
+
+            // Mensaje de error general
+            if (_errorMessage.isNotEmpty &&
+                !_errorMessage.contains('correo') &&
+                !_errorMessage.contains('contraseña') &&
+                !_errorMessage.contains('email'))
+              Padding(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
+                child: Container(
+                  width: double.infinity,
+                  constraints: BoxConstraints(maxWidth: 320),
+                  padding: EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: Colors.red.shade50,
+                    border: Border.all(color: Colors.red.shade300),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Row(
+                    children: [
+                      Icon(Icons.error_outline,
+                          color: Colors.red.shade700, size: 20),
+                      SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          _errorMessage,
+                          style: TextStyle(
+                            color: Colors.red.shade700,
+                            fontSize: 13,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+
             Flexible(
               child: SizedBox(height: 17),
             ),
@@ -130,22 +342,41 @@ class _LoginState extends State<LoginScreen> {
             Flexible(
               child: SizedBox(height: 20),
             ),
-            SizedBox(
-              width: 320,
-              height: 40,
-              child: ElevatedButton(
-                //label: "Login",
-                onPressed: () {
-                  if (_email.text.isNotEmpty && _password.text.isNotEmpty) {
-                    signIn();
-                  }
-                },
-                style: ElevatedButton.styleFrom(
+            // Login Button
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 20),
+              child: Container(
+                width: double.infinity,
+                constraints: BoxConstraints(maxWidth: 320),
+                height: 40,
+                child: ElevatedButton(
+                  onPressed: _isLoading
+                      ? null
+                      : () {
+                          if (_email.text.isNotEmpty &&
+                              _password.text.isNotEmpty) {
+                            signIn();
+                          }
+                        },
+                  style: ElevatedButton.styleFrom(
                     backgroundColor: Color(0xFF0067FF),
-                    foregroundColor: Colors.white),
-                child: Text(
-                  'Iniciar sesión',
-                  style: TextStyle(fontSize: 14),
+                    foregroundColor: Colors.white,
+                    disabledBackgroundColor: Colors.grey.shade400,
+                  ),
+                  child: _isLoading
+                      ? SizedBox(
+                          width: 20,
+                          height: 20,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2,
+                            valueColor:
+                                AlwaysStoppedAnimation<Color>(Colors.white),
+                          ),
+                        )
+                      : Text(
+                          'Iniciar sesión',
+                          style: TextStyle(fontSize: 14),
+                        ),
                 ),
               ),
             ),
